@@ -1659,14 +1659,18 @@ function initLogo() {
 // ============================================================
 //  WINDOW RESIZE
 // ============================================================
+let _resizeTimer = null;
 window.addEventListener('resize', () => {
-  if (state.currentAnalysis) {
-    drawBranchChart(state.currentAnalysis);
-    drawTachogram(state.currentAnalysis);
-    drawPoincare(state.currentAnalysis);
-    drawPSD(state.currentAnalysis);
-    if (state.visMode === 'phase') drawPhaseSpace(state.currentAnalysis);
-  }
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    if (state.currentAnalysis) {
+      drawBranchChart(state.currentAnalysis);
+      drawTachogram(state.currentAnalysis);
+      drawPoincare(state.currentAnalysis);
+      drawPSD(state.currentAnalysis);
+      if (state.visMode === 'phase') drawPhaseSpace(state.currentAnalysis);
+    }
+  }, 150);
 });
 
 // ============================================================

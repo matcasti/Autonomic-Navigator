@@ -460,6 +460,7 @@ body::before {
   border-radius: 100px;
   padding: 3px;
   backdrop-filter: blur(8px);
+  pointer-events: auto;
 }
 
 .vis-tab {

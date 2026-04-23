@@ -806,9 +806,18 @@ function dpr() { return Math.min(window.devicePixelRatio || 1, 2); }
 
 function sizeCanvas(canvas) {
   const D = dpr();
-  const w = canvas.parentElement.clientWidth;
-  const h = parseInt(canvas.getAttribute('height')) || 160;
-  if (!w || w < 20) return; // guard against mid-reflow zero reads
+  const parent = canvas.parentElement;
+  const cs = getComputedStyle(parent);
+  const w = parent.clientWidth
+    - parseFloat(cs.paddingLeft  || '0')
+    - parseFloat(cs.paddingRight || '0');
+  // Cache the original logical height ONCE — setting canvas.height rewrites
+  // the HTML attribute, so reading it again on next resize would compound.
+  if (!canvas.dataset.logicalHeight) {
+    canvas.dataset.logicalHeight = canvas.getAttribute('height') || '160';
+  }
+  const h = parseInt(canvas.dataset.logicalHeight);
+  if (!w || w < 20) return;
   canvas.width  = Math.round(w * D);
   canvas.height = Math.round(h * D);
   canvas.style.width  = w + 'px';

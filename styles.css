@@ -351,7 +351,7 @@ body::before {
 
 .dash-grid {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   grid-template-rows: auto;
   gap: 0;
   min-height: calc(100vh - 60px);
@@ -363,6 +363,8 @@ body::before {
   flex-direction: column;
   gap: 0;
   border-right: 1px solid var(--border);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .dash-sidebar {
@@ -371,9 +373,12 @@ body::before {
   background: var(--bg2);
   position: sticky;
   top: 60px;
+  width: 340px;
   height: calc(100vh - 60px);
   overflow-y: auto;
   overflow-x: hidden;
+  box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 /* ===================== 3D PANEL ===================== */

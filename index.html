@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AUTONOMIC NAVIGATOR — SDE-IG HRV Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Exo+2:wght@300;400;500;600&amp;family=JetBrains+Mono:wght@300;400;500&amp;display=swap" rel="stylesheet">
+<link href="styles.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">ANALYZING AUTONOMIC DYNAMICS</div>
+  <div class="loading-sub" id="loading-sub">Initializing SDE-IG filter...</div>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<!-- Header -->
+<header id="app-header">
+  <div class="header-logo">
+    <div class="logo-icon"><canvas id="logo-canvas" width="36" height="36"></canvas></div>
+    <div>
+      <div class="logo-title">AUTONOMIC NAVIGATOR</div>
+      <div class="logo-sub">SDE-IG AUTONOMIC BRANCH ANALYSIS</div>
+    </div>
+  </div>
+  <div class="header-divider"></div>
+  <div class="header-status">
+    <div class="status-pill">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">AWAITING DATA</span>
+    </div>
+    <div class="status-pill" id="rec-info-pill" style="display:none">
+      <span id="rec-info-text">—</span>
+    </div>
+  </div>
+  <div class="header-metrics" id="header-metrics" style="display:none">
+    <div class="hm-item">
+      <div class="hm-val hr" id="hm-hr">—</div>
+      <div class="hm-label">HR bpm</div>
+    </div>
+    <div class="hm-item">
+      <div class="hm-val para" id="hm-p">—</div>
+      <div class="hm-label">p̂(t) vagal</div>
+    </div>
+    <div class="hm-item">
+      <div class="hm-val symp" id="hm-s">—</div>
+      <div class="hm-label">ŝ(t) adren.</div>
+    </div>
+    <div class="hm-item">
+      <div class="hm-val net" id="hm-d">—</div>
+      <div class="hm-label">Δ̂(t) drive</div>
+    </div>
+  </div>
+  <button class="btn-upload-header" onclick="triggerUpload()">⊕ LOAD DATA</button>
+  <input type="file" id="file-input" accept=".txt,.csv" multiple="">
+</header>
+
+<!-- Upload Screen -->
+<div id="upload-screen">
+  <canvas id="bg-canvas" class="bg-3d" width="1460" height="561"></canvas>
+  <div class="content">
+    <div>
+      <div class="hero-title">AUTONOMIC<br><span>NAVIGATOR</span></div>
+      <div class="hero-sub" style="margin-top:10px">SDE Inverse-Gaussian · Real-Time Autonomic Branch Analysis</div>
+    </div>
+    <div class="upload-zone" id="upload-zone" onclick="triggerUpload()">
+      <div class="upload-icon">⚡</div>
+      <div class="upload-title">LOAD RR INTERVAL DATA</div>
+      <div class="upload-desc">
+        Drop your RR interval file here or click to browse.<br>
+        Accepts <code>.txt</code> or <code>.csv</code> files. Units auto-detected<br>
+        (milliseconds or seconds).
+      </div>
+      <div class="upload-formats">
+        <span class="fmt-badge">CSV with header</span>
+        <span class="fmt-badge">Single-column TXT</span>
+        <span class="fmt-badge">MS or Seconds</span>
+        <span class="fmt-badge">Time + RR columns</span>
+      </div>
+      <button class="btn-browse" onclick="event.stopPropagation();triggerUpload()">BROWSE FILES</button>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);text-align:center;letter-spacing:0.1em;max-width:400px">
+      BASED ON THE SDE-INVERSE GAUSSIAN FRAMEWORK · CASTILLO-AGUILAR 2026<br>
+      TWO ORNSTEIN-UHLENBECK PROCESSES · POINT-PROCESS UKF INFERENCE
+    </div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard">
+  <div class="dash-grid">
+    <!-- Main content -->
+    <div class="dash-main">
+      <!-- 3D Visualization Panel -->
+      <div id="vis-panel" class="vis-mode-ans">
+        <canvas id="three-canvas"></canvas>
+        <canvas id="phase-canvas"></canvas>
+        <div class="beat-flash" id="beat-flash"></div>
+        <div class="vis-overlay">
+          <div class="vis-tabs">
+            <button class="vis-tab active" onclick="switchVisMode('ans',this)">ANS GLOBE</button>
+            <button class="vis-tab" onclick="switchVisMode('phase',this)">PHASE SPACE</button>
+          </div>
+          <div class="vis-label para" id="vis-para-label">VAGAL p̂ = 0.00</div>
+          <div class="vis-label symp" id="vis-symp-label">ADREN ŝ = 0.00</div>
+          <div class="vis-info">
+            <div class="vi-item"><div class="vi-dot para"></div><span style="font-size:10px;color:var(--text-dim)">PARASYMPATHETIC</span></div>
+            <div class="vi-item"><div class="vi-dot symp"></div><span style="font-size:10px;color:var(--text-dim)">SYMPATHETIC</span></div>
+            <div class="vi-item"><div class="vi-dot net"></div><span style="font-size:10px;color:var(--text-dim)">Δ(t) DRIVE</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-grid">
+        <!-- Autonomic Branches -->
+        <div class="chart-panel full-width">
+          <div class="panel-header">
+            <div class="panel-title para">AUTONOMIC BRANCH TRAJECTORIES p̂(t) &amp; ŝ(t)</div>
+            <div style="display:flex;gap:12px">
+              <div style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--para)"><div style="width:12px;height:2px;background:var(--para);border-radius:1px"></div>Vagal p̂(t)</div>
+              <div style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--symp)"><div style="width:12px;height:2px;background:var(--symp);border-radius:1px"></div>Adrenergic ŝ(t)</div>
+              <div style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--net)"><div style="width:12px;height:2px;background:var(--net);border-radius:1px;border-top:2px dashed var(--net)"></div>Net Δ̂(t)</div>
+            </div>
+          </div>
+          <canvas class="chart-canvas" id="branches-canvas" height="160"></canvas>
+        </div>
+
+        <!-- Tachogram -->
+        <div class="chart-panel">
+          <div class="panel-header">
+            <div class="panel-title neutral">RR TACHOGRAM</div>
+            <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)" id="tachogram-info">— beats</div>
+          </div>
+          <canvas class="chart-canvas" id="tachogram-canvas" height="140"></canvas>
+        </div>
+
+        <!-- Poincaré -->
+        <div class="chart-panel">
+          <div class="panel-header">
+            <div class="panel-title neutral">POINCARÉ PLOT</div>
+            <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)" id="poincare-info">SD1 — | SD2 —</div>
+          </div>
+          <canvas class="chart-canvas" id="poincare-canvas" height="140"></canvas>
+        </div>
+
+        <!-- PSD -->
+        <div class="chart-panel full-width">
+          <div class="panel-header">
+            <div class="panel-title neutral">POWER SPECTRAL DENSITY</div>
+            <div style="display:flex;gap:16px">
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--symp)">LF: <span id="lf-power">—</span> ms²</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--para)">HF: <span id="hf-power">—</span> ms²</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)">LF/HF: <span id="lfhf-ratio">—</span></div>
+            </div>
+          </div>
+          <canvas class="chart-canvas" id="psd-canvas" height="140"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="dash-sidebar">
+      <!-- Current State -->
+      <div class="sidebar-section bg-glow-para">
+        <div class="sidebar-title">CURRENT AUTONOMIC STATE</div>
+        <div class="metric-card para">
+          <div class="metric-label">VAGAL TONE · p̂(t)</div>
+          <div><span class="metric-value para" id="m-p">0.00</span></div>
+          <div class="metric-bar"><div class="metric-bar-fill para" id="bar-p" style="width:50%"></div></div>
+        </div>
+        <div class="metric-card symp">
+          <div class="metric-label">ADRENERGIC TONE · ŝ(t)</div>
+          <div><span class="metric-value symp" id="m-s">0.00</span></div>
+          <div class="metric-bar"><div class="metric-bar-fill symp" id="bar-s" style="width:50%"></div></div>
+        </div>
+        <div class="metric-card net">
+          <div class="metric-label">NET AUTONOMIC DRIVE · Δ̂(t)</div>
+          <div><span class="metric-value net" id="m-d">0.00</span></div>
+        </div>
+        <div class="metric-card neutral">
+          <div class="metric-label">INSTANTANEOUS HEART RATE</div>
+          <div><span class="metric-value" id="m-hr">—</span><span class="metric-unit">bpm</span></div>
+        </div>
+        <!-- Balance -->
+        <div class="balance-indicator">
+          <div class="balance-fill-para" id="bal-para" style="width:50%"></div>
+          <div class="balance-fill-symp" id="bal-symp" style="width:50%"></div>
+          <span class="balance-label left">PNS</span>
+          <span class="balance-label center" id="bal-center">BALANCED</span>
+          <span class="balance-label right">SNS</span>
+        </div>
+      </div>
+
+      <!-- HRV Statistics -->
+      <div class="sidebar-section">
+        <div class="sidebar-title">HRV STATISTICS</div>
+        <table class="stats-table">
+          <tbody><tr><td>Mean RR</td><td id="st-meanrr">—</td></tr>
+          <tr><td>SDNN</td><td id="st-sdnn">—</td></tr>
+          <tr><td>RMSSD</td><td id="st-rmssd">—</td></tr>
+          <tr><td>pNN50</td><td id="st-pnn50">—</td></tr>
+          <tr><td>Mean HR</td><td id="st-hr">—</td></tr>
+          <tr><td>LF Power</td><td id="st-lf">—</td></tr>
+          <tr><td>HF Power</td><td id="st-hf">—</td></tr>
+          <tr><td>LF/HF</td><td id="st-lfhf">—</td></tr>
+          <tr><td>LF n.u.</td><td id="st-lfnu">—</td></tr>
+          <tr><td>HF n.u.</td><td id="st-hfnu">—</td></tr>
+          <tr><td>SD1</td><td id="st-sd1">—</td></tr>
+          <tr><td>SD2</td><td id="st-sd2">—</td></tr>
+          <tr><td>SD1/SD2</td><td id="st-sd1sd2">—</td></tr>
+        </tbody></table>
+      </div>
+
+      <!-- Model Parameters -->
+      <div class="sidebar-section">
+        <div class="sidebar-title">SDE-IG MODEL PARAMETERS</div>
+        <div class="param-grid">
+          <div class="param-item"><div class="param-name">aₚ (Hz) vagal decay</div><div class="param-val" id="par-ap">—</div></div>
+          <div class="param-item"><div class="param-name">aₛ (Hz) symp. decay</div><div class="param-val" style="color:var(--symp)" id="par-as">—</div></div>
+          <div class="param-item"><div class="param-name">σₚ vagal noise</div><div class="param-val" id="par-sp">—</div></div>
+          <div class="param-item"><div class="param-name">σₛ symp. noise</div><div class="param-val" style="color:var(--symp)" id="par-ss">—</div></div>
+          <div class="param-item"><div class="param-name">μ₀ baseline RR</div><div class="param-val" style="color:var(--net)" id="par-mu0">—</div></div>
+          <div class="param-item"><div class="param-name">ρ coeff. variation</div><div class="param-val" style="color:var(--net)" id="par-rho">—</div></div>
+          <div class="param-item"><div class="param-name">κ shape param.</div><div class="param-val" style="color:var(--text)" id="par-kappa">—</div></div>
+          <div class="param-item"><div class="param-name">τₚ vagal τ-const</div><div class="param-val" id="par-taup">—</div></div>
+        </div>
+      </div>
+
+      <!-- Recordings -->
+      <div class="sidebar-section" style="flex:1">
+        <div class="sidebar-title">RECORDINGS</div>
+        <div id="recordings-list">
+          <div style="font-size:12px;color:var(--text-dim);text-align:center;padding:20px">No recordings loaded</div>
+        </div>
+      </div>
+
+      <!-- Playback -->
+      <div class="sidebar-section" id="playback-section" style="display:none">
+        <div class="sidebar-title">TIMELINE</div>
+        <div class="timeline-bar" id="timeline-bar">
+          <div class="timeline-fill" id="timeline-fill" style="width:0%"></div>
+          <div class="timeline-thumb" id="timeline-thumb" style="left:0%"></div>
+        </div>
+        <div class="playback-controls">
+          <button class="btn-play" id="play-btn" onclick="togglePlayback()">▶</button>
+          <div class="playback-time" id="playback-time">0:00 / 0:00</div>
+          <button class="btn-play" onclick="seekTo(0)" title="Restart">⟪</button>
+        </div>
+      </div>
+
+      <!-- Export -->
+      <div class="sidebar-section">
+        <button class="btn-export" onclick="exportReport()" id="export-btn">
+          ↓ EXPORT ANALYSIS REPORT
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

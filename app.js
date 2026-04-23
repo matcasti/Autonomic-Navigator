@@ -808,8 +808,9 @@ function sizeCanvas(canvas) {
   const D = dpr();
   const w = canvas.parentElement.clientWidth;
   const h = parseInt(canvas.getAttribute('height')) || 160;
-  canvas.width  = w * D;
-  canvas.height = h * D;
+  if (!w || w < 20) return; // guard against mid-reflow zero reads
+  canvas.width  = Math.round(w * D);
+  canvas.height = Math.round(h * D);
   canvas.style.width  = w + 'px';
   canvas.style.height = h + 'px';
 }
@@ -1265,9 +1266,6 @@ function updatePlaybackDisplay(analysis) {
   document.getElementById('hm-p').textContent  = fdata.p.toFixed(3);
   document.getElementById('hm-s').textContent  = fdata.s.toFixed(3);
   document.getElementById('hm-d').textContent  = fdata.delta.toFixed(3);
-
-  // Redraw branch chart cursor
-  drawBranchChart(analysis);
 }
 
 // ============================================================

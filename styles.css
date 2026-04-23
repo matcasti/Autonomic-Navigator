@@ -355,6 +355,7 @@ body::before {
   grid-template-rows: auto;
   gap: 0;
   min-height: calc(100vh - 60px);
+  align-items: start;
 }
 
 .dash-main {
@@ -368,6 +369,11 @@ body::before {
   display: flex;
   flex-direction: column;
   background: var(--bg2);
+  position: sticky;
+  top: 60px;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* ===================== 3D PANEL ===================== */
@@ -696,6 +702,7 @@ body::before {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+  min-width: 0;
 }
 
 .param-item {

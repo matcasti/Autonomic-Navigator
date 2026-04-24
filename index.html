@@ -163,6 +163,27 @@
           </div>
           <canvas class="chart-canvas" id="psd-canvas" height="140"></canvas>
         </div>
+
+        <!-- OU Impulse-Response Simulator -->
+        <div class="chart-panel full-width">
+          <div class="panel-header">
+            <div class="panel-title para">OU IMPULSE-RESPONSE SIMULATOR</div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <span style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim)">INJECT:</span>
+              <button class="btn-perturb p-pos" onclick="perturbANS('p', 1)">+VAGAL</button>
+              <button class="btn-perturb p-neg" onclick="perturbANS('p',-1)">−VAGAL</button>
+              <button class="btn-perturb s-pos" onclick="perturbANS('s', 1)">+ADREN</button>
+              <button class="btn-perturb s-neg" onclick="perturbANS('s',-1)">−ADREN</button>
+              <button class="btn-perturb reset" onclick="resetOUSim()">RESET</button>
+            </div>
+          </div>
+          <canvas class="chart-canvas" id="ou-sim-canvas" height="180"></canvas>
+          <div class="ou-sim-footer">
+            <div>Vagal time-constant: <span id="ou-tau-p">—</span></div>
+            <div>Adrenergic time-constant: <span id="ou-tau-s">—</span></div>
+            <div style="color:var(--text-dim)">Each click injects ±1σ from the current EKF state. Shaded band = 1σ / 2σ stochastic envelope.</div>
+          </div>
+        </div>
       </div>
     </div>
 

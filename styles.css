@@ -959,3 +959,33 @@ body::before {
 /* Gradient accents on backgrounds */
 .bg-glow-para { background: radial-gradient(ellipse at top left, rgba(0,229,255,0.06) 0%, transparent 60%); }
 .bg-glow-symp { background: radial-gradient(ellipse at top right, rgba(255,109,0,0.06) 0%, transparent 60%); }
+
+/* ── OU Perturbation buttons ──────────────────────── */
+.btn-perturb {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 100px;
+  cursor: pointer;
+  border: 1px solid;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-perturb:hover { opacity: 0.75; }
+.btn-perturb.p-pos  { background: rgba(0,229,255,0.10); border-color: rgba(0,229,255,0.45); color: var(--para); }
+.btn-perturb.p-neg  { background: rgba(0,229,255,0.04); border-color: rgba(0,229,255,0.20); color: var(--para2); }
+.btn-perturb.s-pos  { background: rgba(255,109,0,0.10); border-color: rgba(255,109,0,0.45); color: var(--symp); }
+.btn-perturb.s-neg  { background: rgba(255,109,0,0.04); border-color: rgba(255,109,0,0.20); color: var(--symp2); }
+.btn-perturb.reset  { background: rgba(100,100,130,0.08); border-color: rgba(100,100,130,0.25); color: var(--text-dim); }
+.ou-sim-footer {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  padding: 6px 0 0;
+  line-height: 1.7;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ou-sim-footer span { color: var(--text); }

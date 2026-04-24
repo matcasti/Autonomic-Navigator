@@ -702,14 +702,18 @@ function initThreeScene() {
 function drawPhaseSpace(analysis) {
   const canvas = document.getElementById('phase-canvas');
   const panel  = document.getElementById('vis-panel');
-  canvas.width  = panel.clientWidth  * window.devicePixelRatio;
-  canvas.height = panel.clientHeight * window.devicePixelRatio;
+  const D      = window.devicePixelRatio || 1;
+
+  canvas.width  = panel.clientWidth  * D;
+  canvas.height = panel.clientHeight * D;
   canvas.style.width  = panel.clientWidth  + 'px';
   canvas.style.height = panel.clientHeight + 'px';
 
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  const pad = 60 * window.devicePixelRatio;
+  const pad = { l: 62*D, r: 34*D, t: 52*D, b: 58*D };
+  const IW  = W - pad.l - pad.r;
+  const IH  = H - pad.t - pad.b;
 
   ctx.fillStyle = '#020912';
   ctx.fillRect(0, 0, W, H);
@@ -717,86 +721,212 @@ function drawPhaseSpace(analysis) {
   const filt = analysis.filter;
   if (!filt || filt.length < 2) return;
 
-  const ps = filt.map(f => f.p), ss = filt.map(f => f.s);
-  const minP = Math.min(...ps), maxP = Math.max(...ps);
-  const minS = Math.min(...ss), maxS = Math.max(...ss);
-  const rangeP = Math.max(0.2, maxP - minP), rangeS = Math.max(0.2, maxS - minS);
+  const pr = analysis.params;
 
-  const sx = x => pad + (x - minP) / rangeP * (W - 2 * pad);
-  const sy = y => H - pad - (y - minS) / rangeS * (H - 2 * pad);
+  // ── Stationary σ for each OU branch ─────────────────────────
+  // σ_stat = σ / √(2a)  →  the phase-space axes are in these units
+  const sigP = pr.sigma_p / Math.sqrt(2 * pr.ap);
+  const sigS = pr.sigma_s / Math.sqrt(2 * pr.as);
 
-  // Grid
-  ctx.strokeStyle = 'rgba(0,100,150,0.2)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 5; i++) {
-    const xg = pad + i / 5 * (W - 2 * pad);
-    const yg = pad + i / 5 * (H - 2 * pad);
-    ctx.beginPath(); ctx.moveTo(xg, pad); ctx.lineTo(xg, H - pad); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(pad, yg); ctx.lineTo(W - pad, yg); ctx.stroke();
+  const normP = filt.map(f => f.p / sigP);
+  const normS = filt.map(f => f.s / sigS);
+
+  // Axis range: ±3.5 σ covers >99.9 % of the stationary distribution
+  const AX = 3.5;
+  const toX = v => pad.l + (v + AX) / (2 * AX) * IW;
+  const toY = v => pad.t + IH - (v + AX) / (2 * AX) * IH;   // canvas-y inverted
+
+  const ox = toX(0), oy = toY(0);   // equilibrium pixel
+
+  // ── Quadrant fills ───────────────────────────────────────────
+  // Convention: right = more vagal (p↑ → longer RR), up = more adrenergic
+  // Q-TR (high p, high s) → co-activation
+  ctx.fillStyle = 'rgba(255,214,0,0.025)';
+  ctx.fillRect(ox, pad.t, W - pad.r - ox, oy - pad.t);
+  // Q-TL (low p, high s) → stress / SNS dominant
+  ctx.fillStyle = 'rgba(255,50,50,0.035)';
+  ctx.fillRect(pad.l, pad.t, ox - pad.l, oy - pad.t);
+  // Q-BL (low p, low s) → withdrawal
+  ctx.fillStyle = 'rgba(80,80,130,0.030)';
+  ctx.fillRect(pad.l, oy, ox - pad.l, H - pad.b - oy);
+  // Q-BR (high p, low s) → rest / PNS dominant
+  ctx.fillStyle = 'rgba(0,229,255,0.035)';
+  ctx.fillRect(ox, oy, W - pad.r - ox, H - pad.b - oy);
+
+  // ── Sigma grid ───────────────────────────────────────────────
+  for (let s = -3; s <= 3; s++) {
+    const xg = toX(s), yg = toY(s);
+    const isOrigin = s === 0;
+    ctx.strokeStyle = isOrigin ? 'rgba(255,255,255,0.15)' : 'rgba(0,120,180,0.11)';
+    ctx.lineWidth   = isOrigin ? 1.5 : 0.7;
+    ctx.setLineDash(isOrigin ? [] : [3, 6]);
+    ctx.beginPath(); ctx.moveTo(xg, pad.t); ctx.lineTo(xg, H - pad.b); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad.l, yg); ctx.lineTo(W - pad.r, yg); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // ── Stationary-distribution contours (circles in normalised space) ─
+  const rings = [
+    { r: 1, alpha: 0.22, dash: [] },
+    { r: 2, alpha: 0.11, dash: [4, 4] },
+    { r: 3, alpha: 0.05, dash: [2, 7] },
+  ];
+  for (const { r, alpha, dash } of rings) {
+    const rx = toX(r)  - ox;
+    const ry = oy      - toY(r);      // ry is always positive (canvas flipped)
+    ctx.beginPath();
+    ctx.ellipse(ox, oy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+    ctx.lineWidth   = 1;
+    ctx.setLineDash(dash);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.font      = `${6.5 * D}px JetBrains Mono, monospace`;
+    ctx.fillStyle = `rgba(120,160,185,${alpha * 1.6})`;
+    ctx.textAlign = 'left';
+    ctx.fillText(`${r}σ`, ox + rx + 3 * D, oy - 2 * D);
   }
 
-  // Axes labels
-  ctx.font = `${10 * window.devicePixelRatio}px JetBrains Mono, monospace`;
-  ctx.fillStyle = '#4a6080';
-  ctx.textAlign = 'center';
-  ctx.fillText('p̂(t) VAGAL →', W / 2, H - 10 * window.devicePixelRatio);
-  ctx.save(); ctx.translate(15 * window.devicePixelRatio, H / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText('ŝ(t) ADRENERGIC →', 0, 0);
-  ctx.restore();
+  // ── Asymmetric OU vector field ────────────────────────────────
+  // In σ-normalised coordinates the drift speed ratio is ap/as
+  // (vagal is typically faster → arrows tilt strongly left/right near x-axis)
+  const GN = 8;
+  const arrowLen = IW / GN * 0.38;
+  for (let i = 0; i <= GN; i++) {
+    for (let j = 0; j <= GN; j++) {
+      const pv = -AX + i * 2 * AX / GN;
+      const sv = -AX + j * 2 * AX / GN;
+      const r  = Math.sqrt(pv * pv + sv * sv);
+      if (r < 0.25) continue;
 
-  // Diagonal (Δ=0 line)
-  ctx.strokeStyle = 'rgba(0,230,118,0.2)';
-  ctx.setLineDash([5, 5]);
-  const pMid = (minP + maxP) / 2, sMid = (minS + maxS) / 2;
-  ctx.beginPath();
-  ctx.moveTo(sx(minP), sy(minP + sMid - pMid));
-  ctx.lineTo(sx(maxP), sy(maxP + sMid - pMid));
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(0,230,118,0.5)';
-  ctx.font = `${8 * window.devicePixelRatio}px JetBrains Mono, monospace`;
-  ctx.fillText('Δ=0', sx(maxP) - 20, sy(maxP + sMid - pMid) - 8);
+      // Drift: d(p̃)/dt ∝ -ap·p̃,  d(s̃)/dt ∝ -as·s̃
+      // Use ratio so relative speed is preserved in σ-space
+      const dvx = -pv * (pr.ap / pr.as);
+      const dvy = -sv;
+      const mag = Math.sqrt(dvx * dvx + dvy * dvy);
 
-  // Trajectory with color gradient
+      const ax = toX(pv), ay = toY(sv);
+      const ex = ax + (dvx / mag) * arrowLen;
+      const ey = ay - (dvy / mag) * arrowLen;   // canvas y flipped
+
+      const alpha = clamp(0.04 + 0.055 * (1 - r / (AX * Math.SQRT2)), 0.02, 0.11);
+      ctx.strokeStyle = `rgba(70,140,210,${alpha})`;
+      ctx.lineWidth   = 0.8;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ex, ey); ctx.stroke();
+
+      const ang = Math.atan2(ey - ay, ex - ax);
+      const hl  = 3.5 * D;
+      ctx.strokeStyle = `rgba(70,140,210,${alpha * 0.7})`;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - hl * Math.cos(ang - 0.42), ey - hl * Math.sin(ang - 0.42));
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - hl * Math.cos(ang + 0.42), ey - hl * Math.sin(ang + 0.42));
+      ctx.stroke();
+    }
+  }
+
+  // ── Trajectory – time-encoded colour (cool → warm) ───────────
   const N = filt.length;
   for (let i = 1; i < N; i++) {
     const t = i / N;
-    const f0 = filt[i - 1], f1 = filt[i];
-    const x0 = sx(f0.p), y0 = sy(f0.s);
-    const x1 = sx(f1.p), y1 = sy(f1.s);
-
-    // Color by delta
-    const d = f1.delta;
-    const r = Math.round(clamp(d > 0 ? 200 + d * 100 : 0, 0, 255));
-    const g = Math.round(clamp(d < 0 ? 180 + Math.abs(d) * 100 : 50, 0, 255));
-    const b = Math.round(clamp(d < 0 ? 255 : 50, 0, 255));
-    ctx.strokeStyle = `rgba(${r},${g},${b},${0.3 + 0.5 * t})`;
-    ctx.lineWidth = 1.5 * window.devicePixelRatio;
+    const r = Math.round(20  + t * 220);
+    const g = Math.round(110 + t * 30);
+    const b = Math.round(235 - t * 205);
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.15 + 0.50 * t})`;
+    ctx.lineWidth   = 1.2 * D;
     ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
+    ctx.moveTo(toX(normP[i - 1]), toY(normS[i - 1]));
+    ctx.lineTo(toX(normP[i]),     toY(normS[i]));
     ctx.stroke();
   }
 
-  // Current position
-  const last = filt[filt.length - 1];
-  ctx.beginPath();
-  ctx.arc(sx(last.p), sy(last.s), 5 * window.devicePixelRatio, 0, Math.PI * 2);
-  ctx.fillStyle = '#00e676';
-  ctx.fill();
-  ctx.strokeStyle = '#00e676';
-  ctx.lineWidth = 2;
-  ctx.stroke();
+  // ── Current frame marker ─────────────────────────────────────
+  const fi  = clamp(state.playback.frame, 0, N - 1);
+  const cpx = toX(normP[fi]), cpy = toY(normS[fi]);
+  const grd = ctx.createRadialGradient(cpx, cpy, 0, cpx, cpy, 15 * D);
+  grd.addColorStop(0, 'rgba(0,230,118,0.55)');
+  grd.addColorStop(1, 'rgba(0,230,118,0)');
+  ctx.beginPath(); ctx.arc(cpx, cpy, 15 * D, 0, Math.PI * 2);
+  ctx.fillStyle = grd; ctx.fill();
 
-  // Title
-  ctx.fillStyle = 'rgba(0,229,255,0.6)';
-  ctx.font = `${11 * window.devicePixelRatio}px Orbitron, monospace`;
+  ctx.beginPath(); ctx.arc(cpx, cpy, 4.5 * D, 0, Math.PI * 2);
+  ctx.fillStyle   = '#00e676'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  // Equilibrium
+  ctx.beginPath(); ctx.arc(ox, oy, 3 * D, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+
+  // ── Quadrant labels ──────────────────────────────────────────
+  const qLabel = (x, y, title, sub, color) => {
+    ctx.textAlign   = 'center';
+    ctx.font        = `bold ${8 * D}px Orbitron, monospace`;
+    ctx.fillStyle   = color;
+    ctx.fillText(title, x, y);
+    ctx.font        = `${7 * D}px JetBrains Mono, monospace`;
+    ctx.fillStyle   = color.replace(/[\d.]+\)$/, '0.18)');
+    ctx.fillText(sub, x, y + 10 * D);
+  };
+
+  const qx = (side) => side === 'r' ? ox + (W - pad.r - ox) * 0.52 : pad.l + (ox - pad.l) * 0.48;
+  const qy = (side) => side === 't' ? pad.t + (oy - pad.t) * 0.30  : oy + (H - pad.b - oy) * 0.30;
+
+  qLabel(qx('r'), qy('t'), 'CO-ACTIVATION', 'high p & s',     'rgba(255,214,0,0.38)');
+  qLabel(qx('l'), qy('t'), 'STRESS',        'SNS dominant',   'rgba(255,70,70,0.38)');
+  qLabel(qx('l'), qy('b'), 'WITHDRAWAL',    'both suppressed','rgba(140,140,185,0.32)');
+  qLabel(qx('r'), qy('b'), 'REST',          'PNS dominant',   'rgba(0,229,255,0.38)');
+
+  // ── Axis labels & ticks ──────────────────────────────────────
+  ctx.font      = `${9 * D}px Orbitron, monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(0,229,255,0.70)';
+  ctx.fillText('VAGAL p̂(t)  [σ-units]', W / 2, H - 10 * D);
+
+  ctx.save();
+  ctx.translate(13 * D, H / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = 'rgba(255,109,0,0.70)';
+  ctx.fillText('ADRENERGIC ŝ(t)  [σ-units]', 0, 0);
+  ctx.restore();
+
+  ctx.font      = `${7.5 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#2a4460';
+  for (let s = -3; s <= 3; s++) {
+    if (s === 0) continue;
+    ctx.textAlign = 'center';
+    ctx.fillText(s, toX(s), H - pad.b + 13 * D);
+    ctx.textAlign = 'right';
+    ctx.fillText(s, pad.l - 5 * D, toY(s) + 3 * D);
+  }
+
+  // ── Title & legend ───────────────────────────────────────────
+  ctx.font      = `${10 * D}px Orbitron, monospace`;
+  ctx.fillStyle = 'rgba(0,229,255,0.72)';
   ctx.textAlign = 'left';
-  ctx.fillText('AUTONOMIC PHASE SPACE', pad, 25 * window.devicePixelRatio);
-  ctx.font = `${9 * window.devicePixelRatio}px JetBrains Mono, monospace`;
-  ctx.fillStyle = '#4a6080';
-  ctx.fillText(`N=${N} beats · ${(filt[N-1].t/60).toFixed(1)} min`, pad, 42 * window.devicePixelRatio);
+  ctx.fillText('ANS PHASE SPACE', pad.l, 20 * D);
+
+  ctx.font      = `${7.5 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#2a4460';
+  ctx.fillText(
+    `N=${N} beats  ·  τ_p=${(1/pr.ap).toFixed(2)}s  τ_s=${(1/pr.as).toFixed(1)}s  ` +
+    `σ_p=${sigP.toFixed(3)}  σ_s=${sigS.toFixed(3)}`,
+    pad.l, 34 * D
+  );
+
+  // Time colour bar
+  const lgX = W - pad.r - 72 * D, lgY = 16 * D;
+  const lg  = ctx.createLinearGradient(lgX, 0, lgX + 72 * D, 0);
+  lg.addColorStop(0,   'rgba(20,110,235,0.9)');
+  lg.addColorStop(0.5, 'rgba(70,200,90,0.9)');
+  lg.addColorStop(1,   'rgba(240,90,20,0.9)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(lgX, lgY, 72 * D, 5 * D);
+  ctx.font      = `${6.5 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#2a4460';
+  ctx.textAlign = 'left';  ctx.fillText('start', lgX, lgY + 14 * D);
+  ctx.textAlign = 'right'; ctx.fillText('end',   lgX + 72 * D, lgY + 14 * D);
 }
 
 // ============================================================
@@ -1023,64 +1153,133 @@ function drawPoincare(analysis) {
   const ctx = canvas.getContext('2d');
   const D = dpr();
   const W = canvas.width, H = canvas.height;
-  const pad = 40 * D, sz = Math.min(W, H) - 2 * pad;
-  const ox = (W - sz) / 2, oy = (H - sz) / 2;
 
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = 'rgba(6,15,30,0.5)';
   ctx.fillRect(0, 0, W, H);
 
-  const { rr } = analysis;
+  const { rr, td } = analysis;
   const N = rr.length;
   if (N < 3) return;
 
-  const rms = rr.map(x => x * 1000);
-  const minV = Math.min(...rms), maxV = Math.max(...rms);
-  const rng = Math.max(100, maxV - minV);
-  const ctr = (minV + maxV) / 2;
+  const rms   = rr.map(x => x * 1000);
+  const xPts  = rms.slice(0, N - 1);   // RR_n
+  const yPts  = rms.slice(1);           // RR_{n+1}
 
-  const sc = v => ox + (v - (ctr - rng * 0.55)) / (rng * 1.1) * sz;
+  // True centroid – both axes centre on mean RR
+  const cx = mean(xPts), cy = mean(yPts);
 
-  // Identity line
-  ctx.strokeStyle = 'rgba(100,120,140,0.2)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(ox, oy + sz); ctx.lineTo(ox + sz, oy); ctx.stroke();
+  // Symmetric display window around the centroid
+  const allVals = xPts.concat(yPts);
+  const spread  = Math.max(...allVals) - Math.min(...allVals);
+  const half    = Math.max(80, spread * 0.58);
 
-  // SD1/SD2 ellipse
-  const td = analysis.td;
-  const sd1px = td.sd1 * 1000 / (rng * 1.1) * sz * 1.414;
-  const sd2px = td.sd2 * 1000 / (rng * 1.1) * sz * 1.414;
-  const cx = sc(ctr), cy = sc(ctr);
+  const pad   = 44 * D;
+  const plotW = W - 2 * pad;
+  const plotH = H - 2 * pad;
+
+  // Coordinate helpers – both axes use the SAME mapping centred on (cx, cy)
+  const toX = v => pad + (v - (cx - half)) / (2 * half) * plotW;
+  const toY = v => H - pad - (v - (cy - half)) / (2 * half) * plotH;
+
+  const pcx = toX(cx), pcy = toY(cy);   // centroid in pixel space
+
+  // ── Grid ──────────────────────────────────────────────────────
+  ctx.strokeStyle = 'rgba(0,100,150,0.12)';
+  ctx.lineWidth = 0.7;
+  for (let i = 0; i <= 4; i++) {
+    const x = pad + i / 4 * plotW, y = pad + i / 4 * plotH;
+    ctx.beginPath(); ctx.moveTo(x, pad); ctx.lineTo(x, H - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+  }
+
+  // ── Line of Identity (RRn = RRn+1) centred on cloud ──────────
+  ctx.strokeStyle = 'rgba(130,160,180,0.22)';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(toX(cx - half), toY(cy - half));
+  ctx.lineTo(toX(cx + half), toY(cy + half));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // ── SD1 / SD2 ellipse – properly centred on (pcx, pcy) ───────
+  const scl   = plotW / (2 * half);          // pixels per ms
+  const sd1px = td.sd1 * 1000 * scl * Math.SQRT2;
+  const sd2px = td.sd2 * 1000 * scl * Math.SQRT2;
 
   ctx.save();
-  ctx.translate(cx, H - (cy - oy) - oy);
+  ctx.translate(pcx, pcy);
   ctx.rotate(-Math.PI / 4);
+
   ctx.beginPath();
   ctx.ellipse(0, 0, sd2px, sd1px, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(255,214,0,0.25)';
-  ctx.lineWidth = 1.5 * D;
+  ctx.strokeStyle = 'rgba(255,214,0,0.50)';
+  ctx.lineWidth   = 1.5 * D;
   ctx.stroke();
-  ctx.fillStyle = 'rgba(255,214,0,0.04)';
+  ctx.fillStyle   = 'rgba(255,214,0,0.04)';
   ctx.fill();
+
+  // SD-axis dashes
+  ctx.lineWidth = 0.8;
+  ctx.setLineDash([2, 4]);
+  ctx.strokeStyle = 'rgba(0,229,255,0.30)';
+  ctx.beginPath(); ctx.moveTo(0, -sd1px); ctx.lineTo(0, sd1px); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,109,0,0.30)';
+  ctx.beginPath(); ctx.moveTo(-sd2px, 0); ctx.lineTo(sd2px, 0); ctx.stroke();
+  ctx.setLineDash([]);
   ctx.restore();
 
-  // Points
-  for (let i = 0; i < N - 1; i++) {
-    const x = sc(rms[i]);
-    const y = oy + sz - (sc(rms[i + 1]) - ox);
+  // ── Point cloud – colour encodes time (blue → orange) ────────
+  const nPts = xPts.length;
+  for (let i = 0; i < nPts; i++) {
+    const t = i / nPts;
+    const r = Math.round(60  + t * 190);
+    const g = Math.round(80  + t * 20);
+    const b = Math.round(210 - t * 140);
     ctx.beginPath();
-    ctx.arc(x, y, 1.8 * D, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(124,77,255,0.55)';
+    ctx.arc(toX(xPts[i]), toY(yPts[i]), 1.8 * D, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
     ctx.fill();
   }
 
-  // SD labels
-  ctx.font = `${8 * D}px JetBrains Mono, monospace`;
-  ctx.fillStyle = '#ffd600';
-  ctx.textAlign = 'center';
-  ctx.fillText(`SD1: ${(td.sd1*1000).toFixed(1)}ms`, W / 2, H - 6 * D);
+  // ── Centroid marker ───────────────────────────────────────────
+  ctx.beginPath();
+  ctx.arc(pcx, pcy, 4 * D, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,214,0,0.90)';
+  ctx.fill();
 
-  document.getElementById('poincare-info').textContent = `SD1 ${(td.sd1*1000).toFixed(1)} | SD2 ${(td.sd2*1000).toFixed(1)} ms`;
+  // ── Axis labels ───────────────────────────────────────────────
+  ctx.font      = `${8 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#4a6080';
+  ctx.textAlign = 'center';
+  ctx.fillText('RRₙ (ms)', W / 2, H - 4 * D);
+  ctx.save();
+  ctx.translate(11 * D, H / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('RRₙ₊₁ (ms)', 0, 0);
+  ctx.restore();
+
+  // Tick values at ± half * 0.7
+  ctx.font      = `${7 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#2e4a62';
+  [cx - half * 0.7, cx, cx + half * 0.7].forEach(v => {
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(v), toX(v), H - pad + 12 * D);
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(v), pad - 3 * D, toY(v) + 3 * D);
+  });
+
+  // ── SD legend ─────────────────────────────────────────────────
+  ctx.textAlign = 'left';
+  ctx.font      = `${8 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = 'rgba(0,229,255,0.65)';
+  ctx.fillText(`SD1: ${(td.sd1 * 1000).toFixed(1)} ms`, pad, H - pad + 14 * D);
+  ctx.fillStyle = 'rgba(255,109,0,0.65)';
+  ctx.fillText(`SD2: ${(td.sd2 * 1000).toFixed(1)} ms`, pad + 84 * D, H - pad + 14 * D);
+
+  document.getElementById('poincare-info').textContent =
+    `SD1 ${(td.sd1 * 1000).toFixed(1)} | SD2 ${(td.sd2 * 1000).toFixed(1)} ms`;
 }
 
 function drawPSD(analysis) {
@@ -1238,20 +1437,31 @@ function updateLiveState(p, s, delta, hr) {
   document.getElementById('m-d').textContent  = delta.toFixed(4);
   document.getElementById('m-hr').textContent = isNaN(hr) ? '—' : Math.round(hr);
 
-  // Bar widths (normalize to [-1, 1] range)
-  const pPct = clamp(50 + p * 50, 5, 95);
-  const sPct = clamp(50 + s * 50, 5, 95);
+  // Normalise by stationary σ so the bars reflect σ-units, not raw OU values
+  // (raw p, s hover near 0 by construction; σ-normalised values are meaningful)
+  let pNorm = p, sNorm = s;
+  const an = state.currentAnalysis;
+  if (an) {
+    const pr   = an.params;
+    const sigP = pr.sigma_p / Math.sqrt(2 * pr.ap);
+    const sigS = pr.sigma_s / Math.sqrt(2 * pr.as);
+    pNorm = p / (sigP * 3);   // ±3σ maps to ±100 %
+    sNorm = s / (sigS * 3);
+  }
+  const pPct = clamp(50 + pNorm * 50, 5, 95);
+  const sPct = clamp(50 + sNorm * 50, 5, 95);
   document.getElementById('bar-p').style.width = pPct + '%';
   document.getElementById('bar-s').style.width = sPct + '%';
 
-  // Balance indicator
-  const totalTone = Math.abs(p) + Math.abs(s) + 0.01;
-  const paraFrac = (Math.max(0, p) + 0.001) / (Math.max(0, p) + Math.max(0, s) + 0.002) * 100;
-  const sympFrac = 100 - paraFrac;
-  document.getElementById('bal-para').style.width = Math.min(paraFrac, 48) + '%';
-  document.getElementById('bal-symp').style.width = Math.min(sympFrac, 48) + '%';
+  // Balance: compare normalised activities so it reflects relative dominance
+  const relBalance = clamp(50 + (pNorm - sNorm) * 30, 8, 92);
+  document.getElementById('bal-para').style.width = Math.min(relBalance,     48) + '%';
+  document.getElementById('bal-symp').style.width = Math.min(100-relBalance, 48) + '%';
 
-  const state_str = delta < -0.1 ? 'VAGAL DOMINANT' : delta > 0.1 ? 'SYMPATHETIC DOMINANT' : 'BALANCED';
+  const thresh = an ? (an.params.sigma_p / Math.sqrt(2 * an.params.ap)) * 0.5 : 0.05;
+  const state_str = (pNorm - sNorm) >  0.4 ? 'VAGAL DOMINANT'
+                  : (sNorm - pNorm) >  0.4 ? 'SYMPATHETIC DOMINANT'
+                  :                           'BALANCED';
   document.getElementById('bal-center').textContent = state_str;
 }
 
@@ -1271,10 +1481,209 @@ function updatePlaybackDisplay(analysis) {
   document.getElementById('playback-time').textContent = `${fmt(tCur)} / ${fmt(tTot)}`;
 
   updateLiveState(fdata.p, fdata.s, fdata.delta, 60 / fdata.mu);
+  drawOUSim();
   document.getElementById('hm-hr').textContent = Math.round(60 / fdata.mu);
   document.getElementById('hm-p').textContent  = fdata.p.toFixed(3);
   document.getElementById('hm-s').textContent  = fdata.s.toFixed(3);
   document.getElementById('hm-d').textContent  = fdata.delta.toFixed(3);
+}
+
+// ============================================================
+//  OU IMPULSE-RESPONSE SIMULATOR
+// ============================================================
+const ouSim = { perturbP: 0, perturbS: 0 };
+
+function perturbANS(branch, sigmaSteps) {
+  const an = state.currentAnalysis;
+  if (!an) return;
+  const pr   = an.params;
+  const sigP = pr.sigma_p / Math.sqrt(2 * pr.ap);
+  const sigS = pr.sigma_s / Math.sqrt(2 * pr.as);
+  if (branch === 'p') ouSim.perturbP += sigmaSteps * sigP;
+  else                ouSim.perturbS += sigmaSteps * sigS;
+  drawOUSim();
+}
+
+function resetOUSim() {
+  ouSim.perturbP = 0;
+  ouSim.perturbS = 0;
+  drawOUSim();
+}
+
+function drawOUSim() {
+  const canvas = document.getElementById('ou-sim-canvas');
+  if (!canvas || !state.currentAnalysis) return;
+  sizeCanvas(canvas);
+  const ctx = canvas.getContext('2d');
+  const D   = dpr();
+  const W   = canvas.width, H = canvas.height;
+
+  const an = state.currentAnalysis;
+  const pr = an.params;
+  const fi = Math.min(state.playback.frame, an.filter.length - 1);
+  const f  = an.filter[fi];
+
+  const sigP = pr.sigma_p / Math.sqrt(2 * pr.ap);
+  const sigS = pr.sigma_s / Math.sqrt(2 * pr.as);
+
+  const p0 = f.p + ouSim.perturbP;
+  const s0 = f.s + ouSim.perturbS;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(6,15,30,0.5)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Update footer info
+  const elTauP = document.getElementById('ou-tau-p');
+  const elTauS = document.getElementById('ou-tau-s');
+  if (elTauP) elTauP.textContent = `τ_p = ${(1/pr.ap).toFixed(2)} s`;
+  if (elTauS) elTauS.textContent = `τ_s = ${(1/pr.as).toFixed(1)} s`;
+
+  const halfW = Math.floor(W / 2);
+
+  // ── Inner panel renderer ─────────────────────────────────────
+  function panel(x0, pw, v0, sigma, decayRate, noiseAmp, color, colorRgb, title) {
+    const padL = 40*D, padR = 12*D, padT = 20*D, padB = 30*D;
+    const iw = pw - padL - padR, ih = H - padT - padB;
+    const ox2 = x0 + padL, oy2 = padT;
+
+    // Horizon = 5 time constants but at least 20 s
+    const horizon = Math.max(20, 5 / decayRate);
+    const AX      = 3.2;   // σ range shown
+
+    const toXp = t => ox2 + (t / horizon) * iw;
+    const toYp = v => oy2 + ih - ((v / sigma) / AX * 0.5 + 0.5) * ih;
+    const v0n  = v0 / sigma;   // normalised initial value
+
+    // Grid
+    ctx.strokeStyle = 'rgba(0,80,120,0.14)';
+    ctx.lineWidth   = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = oy2 + i / 4 * ih;
+      ctx.beginPath(); ctx.moveTo(ox2, y); ctx.lineTo(ox2 + iw, y); ctx.stroke();
+    }
+
+    // Zero line
+    const y0p = toYp(0);
+    ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath(); ctx.moveTo(ox2, y0p); ctx.lineTo(ox2 + iw, y0p); ctx.stroke();
+
+    // Stationary ±1σ band (baseline noise floor)
+    ctx.fillStyle = `rgba(${colorRgb},0.05)`;
+    ctx.fillRect(ox2, toYp(sigma), iw, toYp(-sigma) - toYp(sigma));
+
+    // Build analytical bands: mean±1σ and mean±2σ of OU from (v0, t=0)
+    const NS = 160;
+    const dt = horizon / NS;
+    const bands = [];
+    for (let i = 0; i <= NS; i++) {
+      const t    = i * dt;
+      const mV   = v0 * Math.exp(-decayRate * t);
+      const varN = noiseAmp * noiseAmp * (1 - Math.exp(-2 * decayRate * t)) / (2 * decayRate);
+      bands.push({ t, m: mV, sd: Math.sqrt(varN) });
+    }
+
+    // 2σ envelope
+    ctx.beginPath();
+    bands.forEach((b, i) => ctx[i === 0 ? 'moveTo':'lineTo'](toXp(b.t), toYp(b.m + 2*b.sd)));
+    for (let i = bands.length-1; i >= 0; i--) ctx.lineTo(toXp(bands[i].t), toYp(bands[i].m - 2*bands[i].sd));
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${colorRgb},0.05)`;
+    ctx.fill();
+
+    // 1σ envelope
+    ctx.beginPath();
+    bands.forEach((b, i) => ctx[i === 0 ? 'moveTo':'lineTo'](toXp(b.t), toYp(b.m + b.sd)));
+    for (let i = bands.length-1; i >= 0; i--) ctx.lineTo(toXp(bands[i].t), toYp(bands[i].m - bands[i].sd));
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${colorRgb},0.10)`;
+    ctx.fill();
+
+    // Deterministic mean path
+    ctx.beginPath();
+    bands.forEach((b, i) => ctx[i === 0 ? 'moveTo':'lineTo'](toXp(b.t), toYp(b.m)));
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2 * D;
+    ctx.stroke();
+
+    // Equilibrium dashed line
+    ctx.strokeStyle = `rgba(${colorRgb},0.20)`;
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath(); ctx.moveTo(ox2, y0p); ctx.lineTo(ox2 + iw, y0p); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Time-constant marker (τ = 1/a)
+    const tau  = 1 / decayRate;
+    const xTau = toXp(tau);
+    if (tau < horizon) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.13)';
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([2, 5]);
+      ctx.beginPath(); ctx.moveTo(xTau, oy2); ctx.lineTo(xTau, oy2 + ih); ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.font      = `${6.5 * D}px JetBrains Mono, monospace`;
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.textAlign = 'center';
+      ctx.fillText(`τ=${tau.toFixed(1)}s`, xTau, oy2 + 8 * D);
+
+      // 37 % decay dot
+      if (Math.abs(v0n) > 0.15) {
+        ctx.beginPath();
+        ctx.arc(xTau, toYp(v0 * Math.exp(-1)), 3 * D, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.28)';
+        ctx.fill();
+      }
+    }
+
+    // Initial-state marker
+    ctx.beginPath();
+    ctx.arc(toXp(0), toYp(v0), 5 * D, 0, Math.PI * 2);
+    ctx.fillStyle   = color;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth   = 1.2;
+    ctx.stroke();
+
+    // Perturbation annotation
+    if (Math.abs(v0n) > 0.06) {
+      const sign = v0n > 0 ? '+' : '';
+      ctx.font      = `${7.5 * D}px JetBrains Mono, monospace`;
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.fillText(`Δ ${sign}${v0n.toFixed(2)}σ`, toXp(0) + 6*D, toYp(v0) - 8*D);
+    }
+
+    // Y-axis σ ticks
+    ctx.font      = `${7 * D}px JetBrains Mono, monospace`;
+    ctx.fillStyle = '#2e4a62';
+    ctx.textAlign = 'right';
+    [-2, -1, 0, 1, 2].forEach(s => ctx.fillText(`${s}σ`, ox2 - 3*D, toYp(s * sigma) + 3*D));
+
+    // X-axis time ticks
+    ctx.textAlign = 'center';
+    const nTick = Math.min(5, Math.floor(horizon));
+    for (let k = 0; k <= nTick; k++) {
+      const t = k / nTick * horizon;
+      ctx.fillText(`${t.toFixed(0)}s`, toXp(t), oy2 + ih + 12*D);
+    }
+
+    // Panel title
+    ctx.font      = `${8.5 * D}px Orbitron, monospace`;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(title, ox2, oy2 - 5*D);
+  }
+
+  panel(0,       halfW, p0, sigP, pr.ap, pr.sigma_p, '#00e5ff', '0,229,255',   'VAGAL p(t)');
+  panel(halfW,   halfW, s0, sigS, pr.as, pr.sigma_s, '#ff6d00', '255,109,0',   'ADRENERGIC s(t)');
+
+  // Divider
+  ctx.strokeStyle = 'rgba(0,180,255,0.09)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath(); ctx.moveTo(halfW, 0); ctx.lineTo(halfW, H); ctx.stroke();
 }
 
 // ============================================================
@@ -1381,6 +1790,7 @@ function renderDashboard(analysis) {
   drawTachogram(analysis);
   drawPoincare(analysis);
   drawPSD(analysis);
+  drawOUSim();
   if (state.visMode === 'phase') drawPhaseSpace(analysis);
 }
 

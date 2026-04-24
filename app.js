@@ -2285,9 +2285,765 @@ function drawOUSim() {
   }
 }
 
+
 // ============================================================
-//  PLAYBACK
+//  ANS TRAJECTORY PLAYGROUND
 // ============================================================
+
+// ── Scenario library ─────────────────────────────────────────
+// Each scenario returns { up, us } in σ-units given (t, T, sigP, sigS).
+// Slider values are the parameter scale multipliers applied at run-time.
+const PG_SCENARIOS = {
+  baseline: {
+    label: 'BASELINE',
+    desc:  'Unperturbed OU dynamics with estimated parameters. Useful as a null-hypothesis reference.',
+    sliders: { ap:1, as:1, sp:1, ss:1, aps:1, asp:1, p0:0, s0:0 },
+    input: ()  => ({ up: 0, us: 0 }),
+  },
+  stress: {
+    label: 'ACUTE STRESS',
+    desc:  'Sympathetic ramp-up t=15→45 s followed by gradual recovery. Models psychosocial or physical stressor.',
+    sliders: { ap:1, as:0.65, sp:0.8, ss:1.6, aps:1, asp:1.4, p0:-0.3, s0:0.5 },
+    input: (t, T, sigP, sigS) => {
+      const ramp = t < 15 ? 0 : t < 45 ? (t-15)/30 : Math.max(0, 1-(t-45)/Math.max(1,T-45));
+      return { up: -ramp*sigP*1.8, us: ramp*sigS*2.2 };
+    },
+  },
+  relax: {
+    label: 'RELAXATION',
+    desc:  'Progressive vagal augmentation; sympathetic withdrawal. Models meditation, biofeedback, or rest.',
+    sliders: { ap:0.75, as:1.3, sp:1.3, ss:0.65, aps:1, asp:0.7, p0:-0.5, s0:0.4 },
+    input: (t, T, sigP, sigS) => {
+      const ramp = Math.min(1, t / Math.max(1, T * 0.55));
+      return { up: ramp*sigP*1.4, us: -ramp*sigS*0.9 };
+    },
+  },
+  exercise: {
+    label: 'EXERCISE',
+    desc:  'Sustained sympathetic activation with vagal withdrawal. Onset at t=20 s; high SNS drive throughout.',
+    sliders: { ap:1.6, as:0.45, sp:0.55, ss:2.0, aps:0.5, asp:2.0, p0:-1.2, s0:1.8 },
+    input: (t, T, sigP, sigS) => {
+      const onset = Math.min(1, Math.max(0, (t-20)/25));
+      return { up: -onset*sigP*2.2, us: onset*sigS*2.8 };
+    },
+  },
+  breathing: {
+    label: 'RSA BREATHING',
+    desc:  'Resonant slow breathing at 0.1 Hz (6 breaths/min) driving oscillatory vagal input. Increases HF power.',
+    sliders: { ap:0.85, as:1.1, sp:1.8, ss:0.75, aps:1, asp:1, p0:0, s0:0 },
+    input: (t, T, sigP, sigS) => {
+      const f_rsb = 0.1; // Hz
+      const amp   = sigP * 2.0;
+      return { up: amp*Math.sin(2*Math.PI*f_rsb*t), us: -amp*0.35*Math.sin(2*Math.PI*f_rsb*t) };
+    },
+  },
+  orthostatic: {
+    label: 'ORTHOSTATIC',
+    desc:  'Step sympathetic surge at t=20 s (passive standing). Vagal withdrawal with partial spontaneous recovery.',
+    sliders: { ap:1, as:0.8, sp:1, ss:1.4, aps:1, asp:1.2, p0:0, s0:0 },
+    input: (t, T, sigP, sigS) => {
+      if (t < 20) return { up: 0, us: 0 };
+      const decay = Math.exp(-(t-20) / 35);
+      const net   = 1 - decay * 0.55;
+      return { up: -net*sigP*1.1, us: net*sigS*2.0 };
+    },
+  },
+  custom: {
+    label: 'CUSTOM',
+    desc:  'Use sliders to freely specify parameter scales and sustained external inputs.',
+    sliders: { ap:1, as:1, sp:1, ss:1, aps:1, asp:1, p0:0, s0:0 },
+    input: (t, T, sigP, sigS) => ({
+      up: playground.params.up * sigP,
+      us: playground.params.us * sigS,
+    }),
+  },
+};
+
+// ── Playground state ──────────────────────────────────────────
+const playground = {
+  scenario : 'baseline',
+  duration : 60,
+  view     : 'trajectory',
+  result   : null,
+  isRunning: false,
+  params: {
+    ap: 1, as: 1, sp: 1, ss: 1, aps: 1, asp: 1,
+    p0: 0, s0: 0, up: 0, us: 0,
+  },
+};
+
+// ── Slider sync helper ────────────────────────────────────────
+function _pgSetSlider(id, val, labelId, fmt) {
+  const el = document.getElementById(id);
+  if (el) el.value = val;
+  const lb = document.getElementById(labelId);
+  if (lb) lb.textContent = fmt(parseFloat(val));
+}
+
+// ── Param update (called by oninput) ─────────────────────────
+function pg_updateParam(key, rawVal) {
+  const v = parseFloat(rawVal);
+  const fmtScale = x => x.toFixed(2) + '×';
+  const fmtSigma = x => (x >= 0 ? '+' : '') + x.toFixed(1) + ' σ';
+  switch (key) {
+    case 'ap':  playground.params.ap  = v; document.getElementById('pg-ap-val').textContent  = fmtScale(v); break;
+    case 'as':  playground.params.as  = v; document.getElementById('pg-as-val').textContent  = fmtScale(v); break;
+    case 'sp':  playground.params.sp  = v; document.getElementById('pg-sp-val').textContent  = fmtScale(v); break;
+    case 'ss':  playground.params.ss  = v; document.getElementById('pg-ss-val').textContent  = fmtScale(v); break;
+    case 'aps': playground.params.aps = v; document.getElementById('pg-aps-val').textContent = fmtScale(v); break;
+    case 'asp': playground.params.asp = v; document.getElementById('pg-asp-val').textContent = fmtScale(v); break;
+    case 'p0':  playground.params.p0  = v; document.getElementById('pg-p0-val').textContent  = fmtSigma(v); break;
+    case 's0':  playground.params.s0  = v; document.getElementById('pg-s0-val').textContent  = fmtSigma(v); break;
+    case 'up':  playground.params.up  = v; document.getElementById('pg-up-val').textContent  = fmtSigma(v); break;
+    case 'us':  playground.params.us  = v; document.getElementById('pg-us-val').textContent  = fmtSigma(v); break;
+  }
+}
+
+// ── Scenario selection ────────────────────────────────────────
+function pg_setScenario(name, btn) {
+  playground.scenario = name;
+  document.querySelectorAll('.btn-scenario').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const sc = PG_SCENARIOS[name];
+  if (!sc) return;
+
+  // Update all sliders to match preset (custom keeps user values)
+  if (name !== 'custom') {
+    const { ap, as, sp, ss, aps, asp, p0, s0 } = sc.sliders;
+    _pgSetSlider('pg-ap',  ap,  'pg-ap-val',  x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-as',  as,  'pg-as-val',  x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-sp',  sp,  'pg-sp-val',  x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-ss',  ss,  'pg-ss-val',  x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-aps', aps, 'pg-aps-val', x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-asp', asp, 'pg-asp-val', x => x.toFixed(2) + '×');
+    _pgSetSlider('pg-p0',  p0,  'pg-p0-val',  x => (x>=0?'+':'')+x.toFixed(1)+' σ');
+    _pgSetSlider('pg-s0',  s0,  'pg-s0-val',  x => (x>=0?'+':'')+x.toFixed(1)+' σ');
+    playground.params = { ...playground.params, ap, as, sp, ss, aps, asp, p0, s0 };
+  }
+
+  const descEl = document.getElementById('pg-scenario-desc');
+  if (descEl) descEl.textContent = sc.desc;
+}
+
+// ── Duration selector ─────────────────────────────────────────
+function pg_setDuration(dur, btn) {
+  playground.duration = dur;
+  document.querySelectorAll('.btn-pg-dur').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+// ── View selector ─────────────────────────────────────────────
+function pg_setView(view, btn) {
+  playground.view = view;
+  document.querySelectorAll('.btn-pg-view').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  pg_draw();
+}
+
+// ── Reset ─────────────────────────────────────────────────────
+function pg_reset() {
+  playground.result = null;
+  pg_setScenario('baseline', document.getElementById('scen-baseline'));
+  // Reset custom inputs
+  _pgSetSlider('pg-up', 0, 'pg-up-val', x => '+0.0 σ');
+  _pgSetSlider('pg-us', 0, 'pg-us-val', x => '+0.0 σ');
+  playground.params.up = 0;
+  playground.params.us = 0;
+  // Clear stats
+  ['hr','rmssd','p','s','d','balance'].forEach(k => {
+    const el = document.getElementById('pg-stat-' + k);
+    if (el) el.textContent = '—';
+  });
+  _pgClearCanvas();
+}
+
+function _pgClearCanvas() {
+  const canvas = document.getElementById('playground-canvas');
+  if (!canvas) return;
+  sizeCanvas(canvas);
+  const ctx = canvas.getContext('2d');
+  const D = dpr();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(6,15,30,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.font = `${11 * D}px Orbitron, monospace`;
+  ctx.fillStyle = 'rgba(74,96,128,0.45)';
+  ctx.textAlign = 'center';
+  ctx.fillText('Select a scenario and press  ▶ RUN  to simulate autonomic trajectories', W / 2, H / 2);
+  ctx.font = `${9 * D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = 'rgba(74,96,128,0.28)';
+  ctx.fillText('Parameters are scaled from the EKF estimates of the loaded recording', W / 2, H / 2 + 20 * D);
+}
+
+// ── Main run function ─────────────────────────────────────────
+async function pg_run() {
+  if (!state.currentAnalysis) {
+    alert('Load a recording first — the playground uses its estimated SDE-IG parameters as baseline.');
+    return;
+  }
+  if (playground.isRunning) return;
+
+  playground.isRunning = true;
+  const btn = document.getElementById('pg-run-btn');
+  if (btn) { btn.textContent = '⏳  SIMULATING…'; btn.classList.add('running'); }
+
+  await sleep(12); // yield to allow UI repaint
+
+  try {
+    playground.result = _pgSimulate();
+    _pgUpdateStats(playground.result);
+    pg_draw();
+  } finally {
+    playground.isRunning = false;
+    if (btn) { btn.textContent = '▶  RUN'; btn.classList.remove('running'); }
+  }
+}
+
+// ── Euler-Maruyama ensemble simulation ────────────────────────
+function _pgSimulate() {
+  const an  = state.currentAnalysis;
+  const pr  = an.params;
+  const pg  = playground.params;
+  const sc  = PG_SCENARIOS[playground.scenario];
+  const T   = playground.duration;
+  const nP  = parseInt(document.getElementById('pg-npaths')?.value || 20);
+
+  // How many time steps: 80 Hz resolution (fine enough for HF band)
+  const N     = Math.min(48000, Math.round(T * 80));
+  const dt    = T / N;
+  const sqDt  = Math.sqrt(dt);
+
+  // ── Scaled parameters ────────────────────────────────────────
+  const ap  = pr.ap         * pg.ap;
+  const as_ = pr.as         * pg.as;
+  const sp  = pr.sigma_p    * pg.sp;
+  const ss  = pr.sigma_s    * pg.ss;
+  const aps = (pr.a_ps||0)  * pg.aps;
+  const asp = (pr.a_sp||0)  * pg.asp;
+  const mu0 = pr.mu0;
+
+  // Stationary σ of the unscaled process (for σ-unit conversions)
+  const sigP_stat = pr.sigma_p / Math.sqrt(2 * pr.ap + 1e-10);
+  const sigS_stat = pr.sigma_s / Math.sqrt(2 * pr.as + 1e-10);
+
+  // Initial conditions [σ-units → raw]
+  const p0 = pg.p0 * sigP_stat;
+  const s0 = pg.s0 * sigS_stat;
+
+  function randn() {
+    return Math.sqrt(-2 * Math.log(Math.random() + 1e-14)) * Math.cos(2 * Math.PI * Math.random());
+  }
+
+  const inputFn = sc ? sc.input : (t, T, sP, sS) => ({
+    up: pg.up * sP,
+    us: pg.us * sS,
+  });
+
+  // ── Allocate path arrays (store every 4th step to save memory) ─
+  const stride = 4;
+  const nOut   = Math.floor(N / stride) + 1;
+
+  const times  = new Float32Array(nOut);
+  const pathsP = Array.from({ length: nP }, () => new Float32Array(nOut));
+  const pathsS = Array.from({ length: nP }, () => new Float32Array(nOut));
+  const pathsRR= Array.from({ length: nP }, () => new Float32Array(nOut));
+
+  for (let s = 0; s < nOut; s++) times[s] = Math.min(s * stride * dt, T);
+
+  for (let k = 0; k < nP; k++) {
+    let p = p0, s = s0;
+    pathsP[k][0] = p; pathsS[k][0] = s;
+    pathsRR[k][0] = clamp(mu0 * Math.exp(-(p - s)), 0.20, 3.0);
+    let outIdx = 1;
+
+    for (let i = 0; i < N; i++) {
+      const t_i = i * dt;
+      const { up, us } = inputFn(t_i, T, sigP_stat, sigS_stat);
+      const dp = (-ap * p + aps * s + up) * dt + sp * sqDt * randn();
+      const ds = ( asp * p - as_ * s + us) * dt + ss * sqDt * randn();
+      p += dp; s += ds;
+
+      if ((i + 1) % stride === 0 && outIdx < nOut) {
+        pathsP[k][outIdx]  = p;
+        pathsS[k][outIdx]  = s;
+        pathsRR[k][outIdx] = clamp(mu0 * Math.exp(-(p - s)), 0.20, 3.0);
+        outIdx++;
+      }
+    }
+  }
+
+  // ── Pointwise ensemble statistics ────────────────────────────
+  const meanP  = new Float32Array(nOut);
+  const meanS  = new Float32Array(nOut);
+  const meanRR = new Float32Array(nOut);
+  const stdP   = new Float32Array(nOut);
+  const stdS   = new Float32Array(nOut);
+  const stdRR  = new Float32Array(nOut);
+
+  for (let i = 0; i < nOut; i++) {
+    let mp = 0, ms = 0, mr = 0;
+    for (let k = 0; k < nP; k++) { mp += pathsP[k][i]; ms += pathsS[k][i]; mr += pathsRR[k][i]; }
+    meanP[i] = mp/nP; meanS[i] = ms/nP; meanRR[i] = mr/nP;
+    let vp = 0, vs = 0, vr = 0;
+    for (let k = 0; k < nP; k++) {
+      vp += (pathsP[k][i] - meanP[i])**2;
+      vs += (pathsS[k][i] - meanS[i])**2;
+      vr += (pathsRR[k][i] - meanRR[i])**2;
+    }
+    const inv = 1 / Math.max(1, nP - 1);
+    stdP[i]  = Math.sqrt(vp * inv + 1e-20);
+    stdS[i]  = Math.sqrt(vs * inv + 1e-20);
+    stdRR[i] = Math.sqrt(vr * inv + 1e-20);
+  }
+
+  // RMSSD from mean RR path
+  let sumSqD = 0;
+  for (let i = 1; i < nOut; i++) {
+    const d = meanRR[i] - meanRR[i-1];
+    sumSqD += d * d;
+  }
+  const simRMSSD_ms = Math.sqrt(sumSqD / Math.max(1, nOut - 1)) * 1000;
+  const termHR      = 60 / Math.max(0.2, meanRR[nOut - 1]);
+  const termP       = meanP[nOut - 1];
+  const termS       = meanS[nOut - 1];
+  const termDelta   = termS - termP;
+
+  return {
+    times, nOut, nP,
+    pathsP, pathsS, pathsRR,
+    meanP, meanS, meanRR,
+    stdP, stdS, stdRR,
+    stats: {
+      rmssd: simRMSSD_ms, hr: termHR,
+      termP, termS, termDelta,
+      sigP_stat, sigS_stat,
+      ap, as: as_, aps, asp, mu0,
+    },
+  };
+}
+
+// ── Update summary stat cells ─────────────────────────────────
+function _pgUpdateStats(res) {
+  const s = res.stats;
+  const sigP = s.sigP_stat, sigS = s.sigS_stat;
+  document.getElementById('pg-stat-hr').textContent    = s.hr.toFixed(1) + ' bpm';
+  document.getElementById('pg-stat-rmssd').textContent = s.rmssd.toFixed(2) + ' ms';
+  document.getElementById('pg-stat-p').textContent     = s.termP.toFixed(4);
+  document.getElementById('pg-stat-s').textContent     = s.termS.toFixed(4);
+  document.getElementById('pg-stat-d').textContent     = s.termDelta.toFixed(4);
+  const pN = s.termP / (sigP * 3), sN = s.termS / (sigS * 3);
+  const bal = pN - sN;
+  document.getElementById('pg-stat-balance').textContent =
+    bal > 0.18 ? 'VAGAL DOM.' : bal < -0.18 ? 'SYMP. DOM.' : 'BALANCED';
+}
+
+// ── Drawing dispatcher ────────────────────────────────────────
+function pg_draw() {
+  if (!playground.result) { _pgClearCanvas(); return; }
+  switch (playground.view) {
+    case 'trajectory': _pgDrawTrajectory(playground.result); break;
+    case 'phase':      _pgDrawPhase(playground.result);      break;
+    case 'rr':         _pgDrawRR(playground.result);         break;
+    case 'hr':         _pgDrawHR(playground.result);         break;
+  }
+}
+
+// ── Shared canvas setup ───────────────────────────────────────
+function _pgCanvas() {
+  const canvas = document.getElementById('playground-canvas');
+  sizeCanvas(canvas);
+  const ctx = canvas.getContext('2d');
+  const D = dpr();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(6,15,30,0.55)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return { canvas, ctx, D, W: canvas.width, H: canvas.height };
+}
+
+// Shared: draw stochastic envelope + individual paths + mean line
+function _pgBand(ctx, times, nOut, paths, meanArr, stdArr, nP, sx, cy, alpha_band1, alpha_band2, pathAlpha, rgb, lineW, D) {
+  // 2-σ fill
+  ctx.beginPath();
+  for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](sx(times[i]), cy(meanArr[i]+2*stdArr[i]));
+  for (let i=nOut-1;i>=0;i--) ctx.lineTo(sx(times[i]), cy(meanArr[i]-2*stdArr[i]));
+  ctx.closePath(); ctx.fillStyle=`rgba(${rgb},${alpha_band2})`; ctx.fill();
+  // 1-σ fill
+  ctx.beginPath();
+  for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](sx(times[i]), cy(meanArr[i]+stdArr[i]));
+  for (let i=nOut-1;i>=0;i--) ctx.lineTo(sx(times[i]), cy(meanArr[i]-stdArr[i]));
+  ctx.closePath(); ctx.fillStyle=`rgba(${rgb},${alpha_band1})`; ctx.fill();
+  // Individual paths (skip if too many to keep it readable)
+  const drawEvery = Math.max(1, Math.round(nP / 12));
+  for (let k=0;k<nP;k+=drawEvery) {
+    ctx.beginPath(); let penDown=false;
+    for (let i=0;i<nOut;i++) {
+      const y=cy(paths[k][i]);
+      penDown?ctx.lineTo(sx(times[i]),y):ctx.moveTo(sx(times[i]),y); penDown=true;
+    }
+    ctx.strokeStyle=`rgba(${rgb},${pathAlpha})`; ctx.lineWidth=0.6; ctx.stroke();
+  }
+  // Mean
+  ctx.beginPath();
+  for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](sx(times[i]), cy(meanArr[i]));
+  ctx.strokeStyle=`rgba(${rgb},0.95)`; ctx.lineWidth=lineW*D; ctx.stroke();
+}
+
+// ── View 1: p(t), s(t), Δ(t) ─────────────────────────────────
+function _pgDrawTrajectory(res) {
+  const { canvas, ctx, D, W, H } = _pgCanvas();
+  const { times, nOut, nP, pathsP, pathsS, meanP, meanS, stdP, stdS, stats } = res;
+  const T = times[nOut-1];
+
+  const padL=54*D, padR=22*D, padT=24*D, padB=38*D;
+  const IW=W-padL-padR, IH=H-padT-padB;
+
+  // Value range: include ±2σ envelopes
+  let minV =  Infinity, maxV = -Infinity;
+  for (let i=0;i<nOut;i++) {
+    minV=Math.min(minV, meanP[i]-2*stdP[i], meanS[i]-2*stdS[i]);
+    maxV=Math.max(maxV, meanP[i]+2*stdP[i], meanS[i]+2*stdS[i]);
+  }
+  const rng  = Math.max(0.3, maxV-minV);
+  const padV = rng*0.12;
+
+  const sx = t => padL + (t/T)*IW;
+  const sy = v => padT + IH - (v-minV+padV)/(rng+2*padV)*IH;
+  const cy = v => clamp(sy(v), padT, padT+IH);
+
+  // Grid
+  ctx.strokeStyle='rgba(0,100,150,0.10)'; ctx.lineWidth=0.7;
+  for (let i=0;i<=4;i++) { const y=padT+i/4*IH; ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-padR,y);ctx.stroke(); }
+  // Zero line
+  const y0=sy(0);
+  if (y0>=padT&&y0<=padT+IH) {
+    ctx.strokeStyle='rgba(255,255,255,0.10)'; ctx.lineWidth=1; ctx.setLineDash([3,6]);
+    ctx.beginPath();ctx.moveTo(padL,y0);ctx.lineTo(W-padR,y0);ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // p(t) band + paths + mean
+  _pgBand(ctx,times,nOut,pathsP,meanP,stdP,nP,sx,cy, 0.12,0.055,0.09,'0,229,255',1.9,D);
+  // s(t) band + paths + mean
+  _pgBand(ctx,times,nOut,pathsS,meanS,stdS,nP,sx,cy, 0.12,0.055,0.09,'255,109,0',1.9,D);
+
+  // Net Δ(t) = s−p  [dashed green]
+  ctx.beginPath();
+  for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](sx(times[i]), cy(meanS[i]-meanP[i]));
+  ctx.strokeStyle='#00e676'; ctx.lineWidth=1.4*D; ctx.setLineDash([4*D,3*D]); ctx.stroke(); ctx.setLineDash([]);
+
+  // Scenario-specific input overlay (shaded region)
+  const sc = PG_SCENARIOS[playground.scenario];
+  if (sc && playground.scenario !== 'baseline') {
+    // Annotate input regions via faint vertical bands
+    // Sample the input function to find non-zero regions
+    const step = Math.max(1, Math.round(T / 200));
+    const sigP = stats.sigP_stat, sigS = stats.sigS_stat;
+    let inRegion = false, regionStart = 0;
+    for (let ti = 0; ti <= T; ti += step) {
+      const { up, us } = sc.input(ti, T, sigP, sigS);
+      const active = Math.hypot(up / (sigP+1e-10), us / (sigS+1e-10)) > 0.05;
+      if (active && !inRegion) { regionStart = ti; inRegion = true; }
+      if (!active && inRegion) {
+        ctx.fillStyle = 'rgba(255,214,0,0.04)';
+        ctx.fillRect(sx(regionStart), padT, sx(ti)-sx(regionStart), IH);
+        inRegion = false;
+      }
+    }
+    if (inRegion) {
+      ctx.fillStyle = 'rgba(255,214,0,0.04)';
+      ctx.fillRect(sx(regionStart), padT, sx(T)-sx(regionStart), IH);
+    }
+  }
+
+  // ── Overlay measured trajectory ───────────────────────────────
+  const showOverlay = document.getElementById('pg-overlay')?.checked && state.currentAnalysis;
+  if (showOverlay) {
+    const filt = state.currentAnalysis.filter;
+    const tMax = Math.min(T, filt[filt.length-1].t);
+    ctx.save();
+    ctx.strokeStyle='rgba(0,229,255,0.35)'; ctx.lineWidth=1.2*D; ctx.setLineDash([2,5]);
+    ctx.beginPath();
+    for (let i=0;i<filt.length;i++) {
+      if (filt[i].t>tMax) break;
+      i===0?ctx.moveTo(sx(filt[i].t),cy(filt[i].p)):ctx.lineTo(sx(filt[i].t),cy(filt[i].p));
+    }
+    ctx.stroke();
+    ctx.strokeStyle='rgba(255,109,0,0.35)';
+    ctx.beginPath();
+    for (let i=0;i<filt.length;i++) {
+      if (filt[i].t>tMax) break;
+      i===0?ctx.moveTo(sx(filt[i].t),cy(filt[i].s)):ctx.lineTo(sx(filt[i].t),cy(filt[i].s));
+    }
+    ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+
+    ctx.font=`${7.5*D}px JetBrains Mono,monospace`; ctx.fillStyle='rgba(255,255,255,0.30)';
+    ctx.textAlign='right'; ctx.fillText('- - MEASURED',W-padR,padT+13*D);
+  }
+
+  // Axis labels
+  ctx.font=`${8*D}px JetBrains Mono,monospace`; ctx.fillStyle='#2e4a62';
+  ctx.textAlign='right';
+  for (let i=0;i<=4;i++) {
+    const v=minV-padV+i/4*(rng+2*padV);
+    ctx.fillText(v.toFixed(2),padL-4*D,padT+IH-i/4*IH+3*D);
+  }
+  ctx.textAlign='center';
+  const nTicks=Math.min(6,Math.ceil(T/10));
+  for (let i=0;i<=nTicks;i++) ctx.fillText((i/nTicks*T).toFixed(0)+'s', sx(i/nTicks*T), H-9*D);
+
+  // Legend
+  ctx.textAlign='left'; ctx.font=`${8*D}px JetBrains Mono,monospace`;
+  ctx.fillStyle='#00e5ff'; ctx.fillText('━  p̂(t) vagal',     padL+6*D,  padT+14*D);
+  ctx.fillStyle='#ff6d00'; ctx.fillText('━  ŝ(t) adren.',    padL+100*D, padT+14*D);
+  ctx.fillStyle='#00e676'; ctx.fillText('╌  Δ̂(t) drive',    padL+196*D, padT+14*D);
+
+  // Title
+  ctx.font=`${9*D}px Orbitron,monospace`; ctx.fillStyle='rgba(0,229,255,0.62)';
+  ctx.textAlign='right';
+  ctx.fillText(
+    `${PG_SCENARIOS[playground.scenario]?.label}  ·  n=${nP} paths  ·  T=${T}s`,
+    W-padR, padT-6*D
+  );
+}
+
+// ── View 2: Phase portrait ────────────────────────────────────
+function _pgDrawPhase(res) {
+  const { canvas, ctx, D, W, H } = _pgCanvas();
+  const { nOut, nP, pathsP, pathsS, meanP, meanS, stats } = res;
+  const sigP = stats.sigP_stat, sigS = stats.sigS_stat;
+  const AX = 3.5;
+
+  const pad=48*D, plotW=W-2*pad, plotH=H-2*pad;
+  const toX = v => pad + (v/sigP + AX)/(2*AX)*plotW;
+  const toY = v => H-pad - (v/sigS + AX)/(2*AX)*plotH;
+  const ox=toX(0), oy=toY(0);
+
+  // Quadrant fills
+  ctx.fillStyle='rgba(0,229,255,0.03)'; ctx.fillRect(ox,oy,W-pad-ox,H-pad-oy);     // REST
+  ctx.fillStyle='rgba(255,109,0,0.03)'; ctx.fillRect(pad,pad,ox-pad,oy-pad);         // STRESS
+
+  // Grid σ lines
+  ctx.lineWidth=0.6;
+  for (let s=-3;s<=3;s++) {
+    const isO=s===0;
+    ctx.strokeStyle=isO?'rgba(255,255,255,0.12)':'rgba(0,100,160,0.10)';
+    ctx.setLineDash(isO?[]:[3,7]);
+    ctx.beginPath(); ctx.moveTo(toX(s*sigP),pad); ctx.lineTo(toX(s*sigP),H-pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad,toY(s*sigS)); ctx.lineTo(W-pad,toY(s*sigS)); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // σ contour ellipses
+  for (const [r,a] of [[1,0.18],[2,0.08]]) {
+    ctx.beginPath();
+    ctx.ellipse(ox, oy, toX(r*sigP)-ox, oy-toY(r*sigS), 0, 0, Math.PI*2);
+    ctx.strokeStyle=`rgba(255,255,255,${a})`; ctx.lineWidth=1; ctx.stroke();
+    ctx.font=`${6.5*D}px JetBrains Mono,monospace`; ctx.fillStyle=`rgba(120,160,185,${a*2})`;
+    ctx.textAlign='left'; ctx.fillText(`${r}σ`, toX(r*sigP)+3*D, oy-2*D);
+  }
+
+  // Individual paths (colour = k/nP gradient)
+  const drawEvery = Math.max(1, Math.round(nP / 14));
+  for (let k=0;k<nP;k+=drawEvery) {
+    ctx.beginPath();
+    for (let i=0;i<nOut;i++) {
+      const t=i/nOut;
+      i===0?ctx.moveTo(toX(pathsP[k][i]),toY(pathsS[k][i])):ctx.lineTo(toX(pathsP[k][i]),toY(pathsS[k][i]));
+    }
+    const t=k/nP;
+    ctx.strokeStyle=`rgba(${Math.round(60+t*170)},${Math.round(90+t*30)},${Math.round(210-t*130)},0.18)`;
+    ctx.lineWidth=0.8; ctx.stroke();
+  }
+
+  // Mean path — glowing
+  ctx.save();
+  ctx.lineWidth=8*D; ctx.strokeStyle='rgba(0,255,150,0.06)';
+  ctx.beginPath(); for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](toX(meanP[i]),toY(meanS[i])); ctx.stroke();
+  ctx.lineWidth=3*D; ctx.strokeStyle='rgba(0,255,150,0.15)';
+  ctx.beginPath(); for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](toX(meanP[i]),toY(meanS[i])); ctx.stroke();
+  ctx.lineWidth=2*D; ctx.strokeStyle='#00ffaa';
+  ctx.beginPath(); for (let i=0;i<nOut;i++) ctx[i?'lineTo':'moveTo'](toX(meanP[i]),toY(meanS[i])); ctx.stroke();
+  ctx.restore();
+
+  // Direction chevrons along mean path
+  const chevEvery = Math.max(1, Math.floor(nOut/9));
+  for (let i=chevEvery;i<nOut;i+=chevEvery) {
+    const dx=meanP[i]-meanP[i-1], dy=meanS[i]-meanS[i-1];
+    const dm=Math.hypot(dx,dy); if (dm<1e-5) continue;
+    const ux=dx/dm*(toX(sigP)-toX(0))/(sigP||1);
+    const uy=-dy/dm*(oy-toY(sigS))/(sigS||1);
+    const um=Math.hypot(ux,uy)+1e-10;
+    const cx2=toX(meanP[i]),cy2=toY(meanS[i]);
+    const cs=6*D;
+    ctx.fillStyle='rgba(0,255,170,0.55)';
+    ctx.beginPath();
+    ctx.moveTo(cx2+ux/um*cs,          cy2+uy/um*cs);
+    ctx.lineTo(cx2-ux/um*cs-uy/um*cs*0.5, cy2-uy/um*cs+ux/um*cs*0.5);
+    ctx.lineTo(cx2-ux/um*cs+uy/um*cs*0.5, cy2-uy/um*cs-ux/um*cs*0.5);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Start marker (cyan) / End marker (orange)
+  [[meanP[0],      meanS[0],      '#00e5ff','START'  ],
+   [meanP[nOut-1], meanS[nOut-1], '#ff6d00','END'    ]].forEach(([p,s,col,lbl]) => {
+    const px=toX(p), py=toY(s);
+    ctx.beginPath(); ctx.arc(px, py, 6*D, 0, Math.PI*2);
+    ctx.fillStyle=col; ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.font=`${7.5*D}px JetBrains Mono,monospace`; ctx.fillStyle=col;
+    ctx.textAlign='center'; ctx.fillText(lbl, px, py-9*D);
+  });
+
+  // Overlay measured
+  if (document.getElementById('pg-overlay')?.checked && state.currentAnalysis) {
+    const filt=state.currentAnalysis.filter;
+    ctx.strokeStyle='rgba(255,255,255,0.20)'; ctx.lineWidth=1.2; ctx.setLineDash([2,5]);
+    ctx.beginPath();
+    for (let i=0;i<filt.length;i++) {
+      i===0?ctx.moveTo(toX(filt[i].p),toY(filt[i].s)):ctx.lineTo(toX(filt[i].p),toY(filt[i].s));
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.font=`${7*D}px JetBrains Mono,monospace`; ctx.fillStyle='rgba(255,255,255,0.28)';
+    ctx.textAlign='right'; ctx.fillText('- - measured',W-pad,pad+10*D);
+  }
+
+  // Quadrant labels
+  const ql=(x,y,txt,col)=>{
+    ctx.font=`bold ${7.5*D}px Orbitron,monospace`; ctx.fillStyle=col;
+    ctx.textAlign='center'; ctx.fillText(txt,x,y);
+  };
+  const qxR=ox+(W-pad-ox)*0.52, qxL=pad+(ox-pad)*0.48;
+  const qyT=pad+(oy-pad)*0.30,  qyB=oy+(H-pad-oy)*0.30;
+  ql(qxR,qyT,'CO-ACT.',  'rgba(255,214,0,0.35)');
+  ql(qxL,qyT,'STRESS',   'rgba(255,70,70,0.35)');
+  ql(qxL,qyB,'WITHDRAW.','rgba(140,140,185,0.30)');
+  ql(qxR,qyB,'REST',     'rgba(0,229,255,0.35)');
+
+  // Axis labels
+  ctx.font=`${9*D}px Orbitron,monospace`; ctx.textAlign='center';
+  ctx.fillStyle='rgba(0,229,255,0.65)'; ctx.fillText('VAGAL p̂(t)  [σ-units]',W/2,H-8*D);
+  ctx.save(); ctx.translate(14*D,H/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle='rgba(255,109,0,0.65)'; ctx.fillText('ADRENERGIC ŝ(t)  [σ-units]',0,0);
+  ctx.restore();
+
+  // Title
+  ctx.font=`${9*D}px Orbitron,monospace`; ctx.fillStyle='rgba(0,229,255,0.60)';
+  ctx.textAlign='left'; ctx.fillText('PHASE PORTRAIT · SIMULATED ENSEMBLE',pad,22*D);
+}
+
+// ── View 3: RR tachogram ─────────────────────────────────────
+function _pgDrawRR(res) {
+  const { canvas, ctx, D, W, H } = _pgCanvas();
+  const { times, nOut, nP, pathsRR, meanRR, stdRR, stats } = res;
+  const T = times[nOut-1];
+
+  const padL=56*D, padR=52*D, padT=24*D, padB=38*D;
+  const IW=W-padL-padR, IH=H-padT-padB;
+
+  let minV=Infinity, maxV=-Infinity;
+  for (let i=0;i<nOut;i++) {
+    minV=Math.min(minV,(meanRR[i]-2*stdRR[i])*1000);
+    maxV=Math.max(maxV,(meanRR[i]+2*stdRR[i])*1000);
+  }
+  const rng=Math.max(50,maxV-minV), padV=rng*0.1;
+  const sx = t => padL + t/T*IW;
+  const sy = v => padT + IH - (v*1000-minV+padV)/(rng+2*padV)*IH;
+  const cy = v => clamp(sy(v), padT, padT+IH);
+
+  // Grid
+  ctx.strokeStyle='rgba(0,100,150,0.10)'; ctx.lineWidth=0.7;
+  for (let i=0;i<=4;i++) { const y=padT+i/4*IH; ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-padR,y);ctx.stroke(); }
+
+  // Bands + paths + mean
+  _pgBand(ctx,times,nOut,pathsRR,meanRR,stdRR,nP,sx,cy,0.14,0.06,0.10,'124,77,255',1.9,D);
+
+  // Overlay measured RR
+  if (document.getElementById('pg-overlay')?.checked && state.currentAnalysis) {
+    const an=state.currentAnalysis;
+    ctx.strokeStyle='rgba(180,136,255,0.30)'; ctx.lineWidth=1.2*D; ctx.setLineDash([2,5]);
+    ctx.beginPath();
+    for (let i=0;i<an.times.length;i++) {
+      if (an.times[i]>T) break;
+      i===0?ctx.moveTo(sx(an.times[i]),cy(an.rr[i])):ctx.lineTo(sx(an.times[i]),cy(an.rr[i]));
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Y-axis (ms) + HR right axis
+  ctx.font=`${8*D}px JetBrains Mono,monospace`; ctx.fillStyle='#2e4a62';
+  for (let i=0;i<=4;i++) {
+    const v=minV-padV+i/4*(rng+2*padV);
+    ctx.textAlign='right'; ctx.fillText(Math.round(v)+'ms',padL-4*D,padT+IH-i/4*IH+3*D);
+    const hr=60000/Math.max(1,v);
+    ctx.textAlign='left'; ctx.fillStyle='rgba(179,136,255,0.40)';
+    ctx.fillText(Math.round(hr)+'bpm',W-padR+4*D,padT+IH-i/4*IH+3*D);
+    ctx.fillStyle='#2e4a62';
+  }
+  ctx.textAlign='center';
+  const nTicks=Math.min(6,Math.ceil(T/10));
+  for (let i=0;i<=nTicks;i++) ctx.fillText((i/nTicks*T).toFixed(0)+'s',sx(i/nTicks*T),H-9*D);
+
+  ctx.font=`${9*D}px Orbitron,monospace`; ctx.fillStyle='rgba(179,136,255,0.65)';
+  ctx.textAlign='left'; ctx.fillText('SIMULATED RR TACHOGRAM',padL,padT-7*D);
+}
+
+// ── View 4: Instantaneous HR ──────────────────────────────────
+function _pgDrawHR(res) {
+  const { canvas, ctx, D, W, H } = _pgCanvas();
+  const { times, nOut, nP, pathsRR, meanRR, stdRR } = res;
+  const T = times[nOut-1];
+
+  const padL=56*D, padR=22*D, padT=24*D, padB=38*D;
+  const IW=W-padL-padR, IH=H-padT-padB;
+
+  // Convert RR→HR
+  const meanHR = meanRR.map(rr => 60/Math.max(0.2,rr));
+  const stdHR  = stdRR.map((s,i)  => (60/(Math.max(0.2,meanRR[i])**2))*s);
+  const pathsHR = pathsRR.map(path => path.map(rr => 60/Math.max(0.2,rr)));
+
+  let minV=Infinity, maxV=-Infinity;
+  for (let i=0;i<nOut;i++) {
+    minV=Math.min(minV,meanHR[i]-2*stdHR[i]);
+    maxV=Math.max(maxV,meanHR[i]+2*stdHR[i]);
+  }
+  const rng=Math.max(10,maxV-minV), padV=rng*0.1;
+  const sx = t => padL + t/T*IW;
+  const sy = v => padT + IH - (v-minV+padV)/(rng+2*padV)*IH;
+  const cy = v => clamp(sy(v), padT, padT+IH);
+
+  ctx.strokeStyle='rgba(0,100,150,0.10)'; ctx.lineWidth=0.7;
+  for (let i=0;i<=4;i++) { const y=padT+i/4*IH; ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-padR,y);ctx.stroke(); }
+
+  _pgBand(ctx,times,nOut,pathsHR,meanHR,stdHR,nP,sx,cy,0.12,0.05,0.09,'255,70,120',2.0,D);
+
+  // Overlay measured HR (from filter)
+  if (document.getElementById('pg-overlay')?.checked && state.currentAnalysis) {
+    const filt=state.currentAnalysis.filter;
+    ctx.strokeStyle='rgba(255,80,130,0.30)'; ctx.lineWidth=1.2*D; ctx.setLineDash([2,5]);
+    ctx.beginPath();
+    for (let i=0;i<filt.length;i++) {
+      if (filt[i].t>T) break;
+      const hr=60/Math.max(0.2,filt[i].mu);
+      i===0?ctx.moveTo(sx(filt[i].t),cy(hr)):ctx.lineTo(sx(filt[i].t),cy(hr));
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  ctx.font=`${8*D}px JetBrains Mono,monospace`; ctx.fillStyle='#2e4a62';
+  ctx.textAlign='right';
+  for (let i=0;i<=4;i++) {
+    const v=minV-padV+i/4*(rng+2*padV);
+    ctx.fillText(Math.round(v)+' bpm',padL-4*D,padT+IH-i/4*IH+3*D);
+  }
+  ctx.textAlign='center';
+  const nTicks=Math.min(6,Math.ceil(T/10));
+  for (let i=0;i<=nTicks;i++) ctx.fillText((i/nTicks*T).toFixed(0)+'s',sx(i/nTicks*T),H-9*D);
+
+  ctx.font=`${9*D}px Orbitron,monospace`; ctx.fillStyle='rgba(255,70,120,0.65)';
+  ctx.textAlign='left'; ctx.fillText('SIMULATED INSTANTANEOUS HEART RATE',padL,padT-7*D);
+}
+
 // ============================================================
 //  PLAYBACK  (requestAnimationFrame, variable speed)
 // ============================================================
@@ -2828,6 +3584,9 @@ function initBgAnimation() {
 // ============================================================
 initLogo();
 initBgAnimation();
+
+// ── Playground: clear canvas once DOM is ready ────────────────
+document.addEventListener('DOMContentLoaded', () => { _pgClearCanvas(); });
 
 // Handle window resize for vis panel after dashboard shown
 const visResizeObs = new ResizeObserver(() => {

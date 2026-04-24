@@ -176,6 +176,186 @@
             <div style="color:var(--text-dim)">Each click injects ±1σ from the current EKF state. Shaded band = 1σ / 2σ stochastic envelope.</div>
           </div>
         </div>
+        <!-- ══════════════════════════════════════════════════
+             ANS TRAJECTORY PLAYGROUND
+             ══════════════════════════════════════════════════ -->
+        <div class="chart-panel full-width" id="playground-panel">
+          <div class="panel-header" style="flex-wrap:wrap;gap:8px">
+            <div class="panel-title para">ANS TRAJECTORY PLAYGROUND · MECHANISTIC HYPOTHESIS TESTING</div>
+            <div class="pg-scenario-row" style="margin-bottom:0">
+              <span style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim);white-space:nowrap">SCENARIO:</span>
+              <button class="btn-scenario active" id="scen-baseline"    onclick="pg_setScenario('baseline',this)">BASELINE</button>
+              <button class="btn-scenario"        id="scen-stress"      onclick="pg_setScenario('stress',this)">ACUTE STRESS</button>
+              <button class="btn-scenario"        id="scen-relax"       onclick="pg_setScenario('relax',this)">RELAXATION</button>
+              <button class="btn-scenario"        id="scen-exercise"    onclick="pg_setScenario('exercise',this)">EXERCISE</button>
+              <button class="btn-scenario"        id="scen-breathing"   onclick="pg_setScenario('breathing',this)">RSA BREATHING</button>
+              <button class="btn-scenario"        id="scen-orthostatic" onclick="pg_setScenario('orthostatic',this)">ORTHOSTATIC</button>
+              <button class="btn-scenario"        id="scen-custom"      onclick="pg_setScenario('custom',this)">CUSTOM</button>
+            </div>
+          </div>
+
+          <!-- Controls grid -->
+          <div class="playground-controls">
+
+            <!-- Column 1: Parameter scaling -->
+            <div class="pg-col">
+              <div class="pg-section-label">MODEL PARAMETER SCALING  ·  ×  estimated value</div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label para">
+                  <span>aₚ  VAGAL DECAY RATE</span>
+                  <span class="pg-val" id="pg-ap-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider para" id="pg-ap" min="0.20" max="4" step="0.05" value="1"
+                       oninput="pg_updateParam('ap',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label symp">
+                  <span>aₛ  ADRENERGIC DECAY RATE</span>
+                  <span class="pg-val" id="pg-as-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider symp" id="pg-as" min="0.20" max="4" step="0.05" value="1"
+                       oninput="pg_updateParam('as',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label para">
+                  <span>σₚ  VAGAL NOISE AMPLITUDE</span>
+                  <span class="pg-val" id="pg-sp-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider para" id="pg-sp" min="0.05" max="4" step="0.05" value="1"
+                       oninput="pg_updateParam('sp',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label symp">
+                  <span>σₛ  ADRENERGIC NOISE AMPLITUDE</span>
+                  <span class="pg-val" id="pg-ss-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider symp" id="pg-ss" min="0.05" max="4" step="0.05" value="1"
+                       oninput="pg_updateParam('ss',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label net">
+                  <span>aₚₛ  SYMPATHETIC → VAGAL COUPLING</span>
+                  <span class="pg-val" id="pg-aps-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider net" id="pg-aps" min="-3" max="3" step="0.1" value="1"
+                       oninput="pg_updateParam('aps',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label net">
+                  <span>aₛₚ  VAGAL → SYMPATHETIC COUPLING</span>
+                  <span class="pg-val" id="pg-asp-val">1.00×</span>
+                </div>
+                <input type="range" class="pg-slider net" id="pg-asp" min="-3" max="3" step="0.1" value="1"
+                       oninput="pg_updateParam('asp',this.value)">
+              </div>
+            </div>
+
+            <!-- Column 2: Initial conditions + external drive -->
+            <div class="pg-col">
+              <div class="pg-section-label">INITIAL STATE  ·  σ-units from equilibrium</div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label para">
+                  <span>p₀  VAGAL INITIAL STATE</span>
+                  <span class="pg-val" id="pg-p0-val">0.0 σ</span>
+                </div>
+                <input type="range" class="pg-slider para" id="pg-p0" min="-3" max="3" step="0.1" value="0"
+                       oninput="pg_updateParam('p0',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label symp">
+                  <span>s₀  ADRENERGIC INITIAL STATE</span>
+                  <span class="pg-val" id="pg-s0-val">0.0 σ</span>
+                </div>
+                <input type="range" class="pg-slider symp" id="pg-s0" min="-3" max="3" step="0.1" value="0"
+                       oninput="pg_updateParam('s0',this.value)">
+              </div>
+
+              <div class="pg-section-label" style="margin-top:10px">EXTERNAL AUTONOMIC DRIVE  ·  σ-units (sustained)</div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label para">
+                  <span>u_p  VAGAL INPUT CURRENT</span>
+                  <span class="pg-val" id="pg-up-val">0.0 σ</span>
+                </div>
+                <input type="range" class="pg-slider para" id="pg-up" min="-3" max="3" step="0.1" value="0"
+                       oninput="pg_updateParam('up',this.value)">
+              </div>
+
+              <div class="pg-slider-row">
+                <div class="pg-slider-label symp">
+                  <span>u_s  ADRENERGIC INPUT CURRENT</span>
+                  <span class="pg-val" id="pg-us-val">0.0 σ</span>
+                </div>
+                <input type="range" class="pg-slider symp" id="pg-us" min="-3" max="3" step="0.1" value="0"
+                       oninput="pg_updateParam('us',this.value)">
+              </div>
+
+              <div class="pg-section-label" style="margin-top:10px">ENSEMBLE SIZE &amp; DURATION</div>
+              <div class="pg-slider-row">
+                <div class="pg-slider-label dim">
+                  <span>n STOCHASTIC PATHS</span>
+                  <span class="pg-val" id="pg-npaths-val">20</span>
+                </div>
+                <input type="range" class="pg-slider dim" id="pg-npaths" min="5" max="50" step="5" value="20"
+                       oninput="document.getElementById('pg-npaths-val').textContent=this.value">
+              </div>
+              <div class="pg-dur-row" style="margin-top:4px">
+                <span style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim);align-self:center">T:</span>
+                <button class="btn-pg-dur active" id="dur-60"  onclick="pg_setDuration(60,this)">60 s</button>
+                <button class="btn-pg-dur"        id="dur-120" onclick="pg_setDuration(120,this)">2 min</button>
+                <button class="btn-pg-dur"        id="dur-300" onclick="pg_setDuration(300,this)">5 min</button>
+                <button class="btn-pg-dur"        id="dur-600" onclick="pg_setDuration(600,this)">10 min</button>
+              </div>
+            </div>
+
+            <!-- Column 3: Run controls + summary stats -->
+            <div class="pg-col">
+              <div class="pg-section-label">SIMULATION CONTROL</div>
+              <div class="pg-action-row">
+                <button class="btn-pg-run" id="pg-run-btn" onclick="pg_run()">▶  RUN</button>
+                <button class="btn-pg-reset" onclick="pg_reset()">↺</button>
+              </div>
+
+              <label class="pg-overlay-label">
+                <input type="checkbox" id="pg-overlay" onchange="pg_draw()">
+                Overlay measured trajectory
+              </label>
+
+              <div class="pg-section-label" style="margin-top:10px">SIMULATION SUMMARY</div>
+              <div class="pg-stats" id="pg-stats">
+                <div class="pg-stat-row"><span>Mean HR</span>         <span id="pg-stat-hr">—</span></div>
+                <div class="pg-stat-row"><span>RMSSD (simulated)</span><span id="pg-stat-rmssd">—</span></div>
+                <div class="pg-stat-row"><span>Terminal p̂</span>      <span id="pg-stat-p">—</span></div>
+                <div class="pg-stat-row"><span>Terminal ŝ</span>      <span id="pg-stat-s">—</span></div>
+                <div class="pg-stat-row"><span>Terminal Δ̂</span>      <span id="pg-stat-d">—</span></div>
+                <div class="pg-stat-row"><span>ANS balance</span>     <span id="pg-stat-balance">—</span></div>
+              </div>
+
+              <div class="pg-scenario-desc" id="pg-scenario-desc">
+                Load a recording and press RUN to simulate autonomic trajectories using estimated SDE-IG parameters.
+              </div>
+            </div>
+          </div>
+
+          <!-- Output view selector -->
+          <div class="pg-view-tabs">
+            <button class="btn-pg-view active" onclick="pg_setView('trajectory',this)">TRAJECTORIES p(t) ŝ(t)</button>
+            <button class="btn-pg-view"        onclick="pg_setView('phase',this)">PHASE PORTRAIT</button>
+            <button class="btn-pg-view"        onclick="pg_setView('rr',this)">RR TACHOGRAM</button>
+            <button class="btn-pg-view"        onclick="pg_setView('hr',this)">HEART RATE</button>
+          </div>
+          <div style="position:relative">
+            <canvas class="chart-canvas" id="playground-canvas" height="220"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -841,6 +841,20 @@ body::before {
 
 .btn-play:hover { background: var(--para-dim); box-shadow: var(--glow-para); }
 
+.speed-select {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.speed-select:focus { outline: none; border-color: var(--para); }
+
 .playback-time {
   font-family: var(--font-mono);
   font-size: 11px;

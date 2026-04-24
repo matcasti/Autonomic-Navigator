@@ -7,7 +7,7 @@ const state = {
   recordings: [],
   activeIdx: -1,
   analysisCache: {},
-  playback: { active: false, frame: 0, speed: 1, raf: null },
+  playback: { active: false, frame: 0, speed: 5, virtualTime: 0, lastTs: null },
   visMode: 'ans',
   threeScene: null,
   currentAnalysis: null
@@ -68,6 +68,29 @@ function fft(re, im) {
       }
     }
   }
+}
+
+// ── Inverse FFT (conjugate trick) ────────────────────────────
+function ifft(re, im) {
+  const n = re.length;
+  for (let i = 0; i < n; i++) im[i] = -im[i];
+  fft(re, im);
+  for (let i = 0; i < n; i++) { re[i] /= n; im[i] = -im[i] / n; }
+}
+
+// ── FFT-based bandpass filter ────────────────────────────────
+function bandpassFFT(x, fs, f1, f2) {
+  const N = nextPow2(x.length * 2);
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < x.length; i++) re[i] = x[i];
+  fft(re, im);
+  const df = fs / N;
+  for (let i = 0; i < N; i++) {
+    const f = Math.abs(i <= N / 2 ? i * df : (i - N) * df);
+    if (f < f1 || f > f2) { re[i] = 0; im[i] = 0; }
+  }
+  ifft(re, im);
+  return Array.from(re).slice(0, x.length);
 }
 
 // ============================================================
@@ -234,8 +257,55 @@ function computeSpectral(rr) {
     lfhf: lf / (hf + 1e-10),
     lf_nu, hf_nu,
     lfPeak: peakFreq(0.04, 0.15),
-    hfPeak: peakFreq(0.15, 0.40)
+    hfPeak: peakFreq(0.15, 0.40),
+    rrU: Array.from(rrU),   // uniform-grid RR for coupling & wavelet
+    fs                       // sample rate used
   };
+}
+
+// ============================================================
+//  COUPLING ESTIMATION  (bivariate AR-1 on band-filtered proxies)
+// ============================================================
+function estimateCoupling(rrU, fs, ap, as_) {
+  const n = rrU.length;
+  if (n < 40) return { a_ps: 0, a_sp: 0 };
+  const dt = 1 / fs;
+  const mu = mean(rrU);
+  const x  = rrU.map(v => v - mu);
+
+  // Band-filtered proxies  (HF ↔ p,  LF ↔ s)
+  const pP = bandpassFFT(x, fs, 0.15, 0.40);
+  const sP = bandpassFFT(x, fs, 0.04, 0.15);
+
+  // Bivariate AR(1) normal equations
+  let sp2=0, ss2=0, sps=0, spnp=0, spns=0, ssnp=0, ssns=0;
+  for (let i = 1; i < n; i++) {
+    const pp = pP[i-1], sp = sP[i-1], pn = pP[i], sn = sP[i];
+    sp2  += pp*pp;  ss2  += sp*sp;  sps  += pp*sp;
+    spnp += pp*pn;  spns += sp*pn;
+    ssnp += pp*sn;  ssns += sp*sn;
+  }
+  const det = sp2*ss2 - sps*sps + 1e-20;
+
+  // Row-wise OLS
+  const alpha_ps = (sp2*spns - sps*spnp) / det;  // coupling: s[n-1] → p[n]
+  const alpha_sp = (ss2*ssnp - sps*ssns) / det;  // coupling: p[n-1] → s[n]
+
+  // First-order continuous-time conversion: A_offdiag ≈ alpha/dt
+  let a_ps = alpha_ps / dt;
+  let a_sp = alpha_sp / dt;
+
+  // Stability guard: |a_ps * a_sp| < 0.8 * ap * as
+  const maxCpl = 0.8 * ap * as_;
+  const mag    = Math.sqrt(Math.abs(a_ps * a_sp)) + 1e-10;
+  if (mag > Math.sqrt(maxCpl)) {
+    const scale = Math.sqrt(maxCpl) / mag;
+    a_ps *= scale; a_sp *= scale;
+  }
+  a_ps = clamp(a_ps, -ap * 0.85, ap * 0.85);
+  a_sp = clamp(a_sp, -as_ * 0.85, as_ * 0.85);
+
+  return { a_ps, a_sp };
 }
 
 // ============================================================
@@ -279,76 +349,103 @@ function estimateParams(rr, td, spec) {
   const sigma_s = Math.sqrt(Math.max(1e-6, lfFrac * varDelta * 2 * as));
   const kappa   = mu0 / (rho * rho);
 
-  return { ap, as, sigma_p, sigma_s, mu0, rho, kappa };
+  const { a_ps, a_sp } = estimateCoupling(spec.rrU || [], spec.fs || 4, ap, as);
+  return { ap, as, sigma_p, sigma_s, mu0, rho, kappa, a_ps, a_sp };
+}
+
+// ── 2×2 matrix exponential via Cayley-Hamilton theorem ───────
+function matexp2x2(a00, a01, a10, a11, tau) {
+  const b00=a00*tau, b01=a01*tau, b10=a10*tau, b11=a11*tau;
+  const tr=b00+b11, det=b00*b11-b01*b10, disc=tr*tr/4-det;
+
+  if (Math.abs(disc) < 1e-12) {
+    const lam=tr/2, el=Math.exp(lam);
+    return [el*(1+b00-lam), el*b01, el*b10, el*(1+b11-lam)];
+  }
+  if (disc > 0) {
+    const sq=Math.sqrt(disc), lam1=tr/2+sq, lam2=tr/2-sq;
+    const e1=Math.exp(lam1), e2=Math.exp(lam2), c=1/(lam1-lam2);
+    return [
+      c*(e1*(b00-lam2)-e2*(b00-lam1)), c*b01*(e1-e2),
+      c*b10*(e1-e2),                   c*(e1*(b11-lam2)-e2*(b11-lam1))
+    ];
+  }
+  // Complex eigenvalues → damped oscillation
+  const sq=Math.sqrt(-disc), eat=Math.exp(tr/2);
+  const cb=Math.cos(sq), sb=Math.sin(sq)/sq;
+  return [
+    eat*(cb+(b00-tr/2)*sb), eat*b01*sb,
+    eat*b10*sb,             eat*(cb+(b11-tr/2)*sb)
+  ];
 }
 
 // ============================================================
 //  EKF (2D: [p, s] state)
 // ============================================================
+// ============================================================
+//  EKF — coupled 2-D OU model  [p, s]
+//  dp = (−ap·p + a_ps·s) dt + σp dWp
+//  ds = (a_sp·p − as·s) dt + σs dWs
+// ============================================================
 class ANS_EKF {
   constructor(params) {
-    this.ap = params.ap;
-    this.as = params.as;
-    this.sp = params.sigma_p;
-    this.ss = params.sigma_s;
+    this.ap  = params.ap;     this.as  = params.as;
+    this.sp  = params.sigma_p; this.ss  = params.sigma_s;
+    this.aps = params.a_ps || 0;   // symp → para coupling
+    this.asp = params.a_sp || 0;   // para → symp coupling
     this.mu0 = params.mu0;
     this.kap = params.kappa;
 
-    // State [p, s]
     this.m = [0, 0];
-    // Covariance (diagonal)
-    const vp = this.sp * this.sp / (2 * this.ap);
-    const vs = this.ss * this.ss / (2 * this.as);
+    const vp = this.sp*this.sp / (2*this.ap);
+    const vs = this.ss*this.ss / (2*this.as);
     this.P = [[vp, 0], [0, vs]];
   }
 
   step(tau) {
-    // Prediction: exact OU transition
-    const ep = Math.exp(-this.ap * tau);
-    const es = Math.exp(-this.as * tau);
-    const mp = [this.m[0] * ep, this.m[1] * es];
+    // ── Transition: Φ = expm(A·τ), A = [[-ap, aps],[asp, -as]]
+    const [p00,p01,p10,p11] = matexp2x2(-this.ap, this.aps, this.asp, -this.as, tau);
 
-    const vp = this.sp * this.sp / (2 * this.ap) * (1 - Math.exp(-2 * this.ap * tau));
-    const vs = this.ss * this.ss / (2 * this.as) * (1 - Math.exp(-2 * this.as * tau));
+    const mp = [
+      p00*this.m[0] + p01*this.m[1],
+      p10*this.m[0] + p11*this.m[1]
+    ];
 
+    // ── Predicted covariance: Pp = Φ·P·Φ' + Q  (Q ≈ diag(σ²·τ))
+    const P = this.P;
     const Pp = [
-      [this.P[0][0] * ep * ep + vp, this.P[0][1] * ep * es],
-      [this.P[1][0] * ep * es,      this.P[1][1] * es * es + vs]
+      [
+        p00*(p00*P[0][0]+p01*P[1][0]) + p01*(p00*P[0][1]+p01*P[1][1]) + this.sp*this.sp*tau,
+        p00*(p10*P[0][0]+p11*P[1][0]) + p01*(p10*P[0][1]+p11*P[1][1])
+      ],[
+        p10*(p00*P[0][0]+p01*P[1][0]) + p11*(p00*P[0][1]+p01*P[1][1]),
+        p10*(p10*P[0][0]+p11*P[1][0]) + p11*(p10*P[0][1]+p11*P[1][1]) + this.ss*this.ss*tau
+      ]
     ];
 
-    // Predicted observation: h(x) = mu0 * exp(p - s)
-    const delta_p = mp[1] - mp[0];
-    const mu_p    = this.mu0 * Math.exp(-delta_p);
-    const muCl    = clamp(mu_p, 0.2, 3.0);
+    // ── Observation: h(x) = μ₀ · exp(p − s)
+    const delta_p = mp[0] - mp[1];
+    const mu_p    = clamp(this.mu0 * Math.exp(delta_p), 0.2, 3.0);
+    const R       = mu_p*mu_p*mu_p / this.kap;
 
-    // IG observation variance: R = mu³/kappa
-    const R = muCl * muCl * muCl / this.kap;
+    // Jacobian H = [∂h/∂p, ∂h/∂s] = [μ, −μ]
+    const Hp = mu_p, Hs = -mu_p;
 
-    // Jacobian: H = [mu_p, -mu_p] (dh/dp, dh/ds)
-    const Hp = muCl, Hs = -muCl;
+    const S  = Hp*(Hp*Pp[0][0]+Hs*Pp[1][0]) + Hs*(Hp*Pp[0][1]+Hs*Pp[1][1]) + R;
+    const Kp = (Hp*Pp[0][0]+Hs*Pp[0][1]) / S;
+    const Ks = (Hp*Pp[1][0]+Hs*Pp[1][1]) / S;
 
-    // Innovation variance S = H P H' + R
-    const S = Hp * (Hp * Pp[0][0] + Hs * Pp[1][0]) +
-              Hs * (Hp * Pp[0][1] + Hs * Pp[1][1]) + R;
+    const innov = clamp(tau - mu_p, -1.5, 1.5);
+    this.m = [mp[0]+Kp*innov, mp[1]+Ks*innov];
 
-    // Kalman gain K = P H' / S
-    const Kp = (Hp * Pp[0][0] + Hs * Pp[0][1]) / S;
-    const Ks = (Hp * Pp[1][0] + Hs * Pp[1][1]) / S;
-
-    // Innovation
-    const innov = clamp(tau - muCl, -1.5, 1.5);
-
-    // Update
-    this.m = [mp[0] + Kp * innov, mp[1] + Ks * innov];
-
-    // Joseph-form covariance update
-    const KSKp = Kp * S * Kp, KSKs = Ks * S * Ks, KSKps = Kp * S * Ks;
+    // Joseph-form update
+    const KSKp=Kp*S*Kp, KSKs=Ks*S*Ks, KSKps=Kp*S*Ks;
     this.P = [
-      [Pp[0][0] - KSKp,  Pp[0][1] - KSKps],
-      [Pp[1][0] - KSKps, Pp[1][1] - KSKs]
+      [Pp[0][0]-KSKp,  Pp[0][1]-KSKps],
+      [Pp[1][0]-KSKps, Pp[1][1]-KSKs]
     ];
 
-    const delta = this.m[1] - this.m[0];
+    const delta = this.m[1] - this.m[0];   // s − p  (net adrenergic drive)
     return {
       p: this.m[0], s: this.m[1], delta,
       mu: this.mu0 * Math.exp(-delta),
@@ -791,41 +888,100 @@ function drawPhaseSpace(analysis) {
   // ── Asymmetric OU vector field ────────────────────────────────
   // In σ-normalised coordinates the drift speed ratio is ap/as
   // (vagal is typically faster → arrows tilt strongly left/right near x-axis)
-  const GN = 8;
-  const arrowLen = IW / GN * 0.38;
+  // ── Coupled vector field with actual A-matrix dynamics ───────
+  const pr_n = analysis.params;
+  const sigP_n = pr.sigma_p / Math.sqrt(2 * pr.ap);
+  const sigS_n = pr.sigma_s / Math.sqrt(2 * pr.as);
+  // Effective coupling strengths in σ-normalised space
+  const gammaPS = (pr_n.a_ps || 0) * sigS / sigP;
+  const gammaSP = (pr_n.a_sp || 0) * sigP / sigS;
+
+  const GN = 9;
+  const arrowLen = IW / GN * 0.36;
   for (let i = 0; i <= GN; i++) {
     for (let j = 0; j <= GN; j++) {
       const pv = -AX + i * 2 * AX / GN;
       const sv = -AX + j * 2 * AX / GN;
-      const r  = Math.sqrt(pv * pv + sv * sv);
-      if (r < 0.25) continue;
+      const r  = Math.sqrt(pv*pv + sv*sv);
+      if (r < 0.20) continue;
 
-      // Drift: d(p̃)/dt ∝ -ap·p̃,  d(s̃)/dt ∝ -as·s̃
-      // Use ratio so relative speed is preserved in σ-space
-      const dvx = -pv * (pr.ap / pr.as);
-      const dvy = -sv;
-      const mag = Math.sqrt(dvx * dvx + dvy * dvy);
+      // True coupled drift: dp̃/dt  = −ap·p̃ + γps·s̃
+      //                     ds̃/dt  =  γsp·p̃ − as·s̃
+      const dvx = -pr.ap * pv + gammaPS * sv;
+      const dvy =  gammaSP * pv - pr.as * sv;
+      const mag = Math.sqrt(dvx*dvx + dvy*dvy) + 1e-9;
 
       const ax = toX(pv), ay = toY(sv);
-      const ex = ax + (dvx / mag) * arrowLen;
-      const ey = ay - (dvy / mag) * arrowLen;   // canvas y flipped
+      const ex = ax + (dvx/mag) * arrowLen;
+      const ey = ay - (dvy/mag) * arrowLen;   // canvas y-axis inverted
 
-      const alpha = clamp(0.04 + 0.055 * (1 - r / (AX * Math.SQRT2)), 0.02, 0.11);
+      const alpha = clamp(0.035 + 0.060*(1 - r/(AX*Math.SQRT2)), 0.015, 0.12);
       ctx.strokeStyle = `rgba(70,140,210,${alpha})`;
       ctx.lineWidth   = 0.8;
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ex, ey); ctx.stroke();
 
-      const ang = Math.atan2(ey - ay, ex - ax);
-      const hl  = 3.5 * D;
-      ctx.strokeStyle = `rgba(70,140,210,${alpha * 0.7})`;
+      // Arrowhead
+      const ang = Math.atan2(ey-ay, ex-ax);
+      const hl  = 3.5*D;
+      ctx.strokeStyle = `rgba(70,140,210,${alpha*0.65})`;
       ctx.beginPath();
       ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - hl * Math.cos(ang - 0.42), ey - hl * Math.sin(ang - 0.42));
+      ctx.lineTo(ex - hl*Math.cos(ang-0.42), ey - hl*Math.sin(ang-0.42));
       ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - hl * Math.cos(ang + 0.42), ey - hl * Math.sin(ang + 0.42));
+      ctx.lineTo(ex - hl*Math.cos(ang+0.42), ey - hl*Math.sin(ang+0.42));
       ctx.stroke();
     }
   }
+
+  // ── Nullclines ───────────────────────────────────────────────
+  // dp̃/dt = 0  →  s̃ = (ap / γps) · p̃   (p-nullcline, cyan)
+  // ds̃/dt = 0  →  s̃ = (γsp / as) · p̃   (s-nullcline, orange)
+  function drawNullcline(slopeS_over_P, color) {
+    // s̃ = slope · p̃
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.3*D;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    // Clamp endpoints to the visible AX range
+    const p1 = -AX, s1 = clamp(slopeS_over_P * p1, -AX, AX);
+    const p2 =  AX, s2 = clamp(slopeS_over_P * p2, -AX, AX);
+    ctx.moveTo(toX(p1), toY(s1));
+    ctx.lineTo(toX(p2), toY(s2));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (Math.abs(gammaPS) > 0.01) {
+    drawNullcline(pr.ap / gammaPS, 'rgba(0,229,255,0.55)');
+    // Label
+    ctx.font = `${6.5*D}px JetBrains Mono, monospace`;
+    ctx.fillStyle = 'rgba(0,229,255,0.55)';
+    ctx.textAlign = 'left';
+    ctx.fillText('dp/dt=0', toX(AX*0.55), toY(pr.ap/gammaPS * AX*0.55) - 5*D);
+  }
+  if (Math.abs(gammaSP) > 0.01 || true) {
+    const slopeDS = Math.abs(pr.as) > 1e-6 ? gammaSP / pr.as : 0;
+    drawNullcline(slopeDS, 'rgba(255,109,0,0.55)');
+    ctx.font = `${6.5*D}px JetBrains Mono, monospace`;
+    ctx.fillStyle = 'rgba(255,109,0,0.55)';
+    ctx.textAlign = 'right';
+    ctx.fillText('ds/dt=0', toX(-AX*0.45), toY(slopeDS * -AX*0.45) - 5*D);
+  }
+
+  // ── Equilibrium & attractor type ─────────────────────────────
+  const tr_sys   = -(pr.ap + pr.as);
+  const det_sys  = pr.ap*pr.as - gammaPS*gammaSP;
+  const disc_sys = tr_sys*tr_sys/4 - det_sys;
+  const attrType = disc_sys > 0 ? 'STABLE NODE' : disc_sys < -0.01 ? 'STABLE SPIRAL' : 'STABLE FOCUS';
+
+  ctx.font      = `${7.5*D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = 'rgba(0,230,118,0.65)';
+  ctx.textAlign = 'center';
+  ctx.fillText(`⊕ ${attrType}`, ox, oy - 14*D);
+  ctx.fillText(
+    `coupling: aₚₛ=${(pr_n.a_ps||0).toFixed(2)} aₛₚ=${(pr_n.a_sp||0).toFixed(2)} Hz`,
+    (pad.l + W - pad.r) / 2, 46*D
+  );
 
   // ── Trajectory – time-encoded colour (cool → warm) ───────────
   const N = filt.length;
@@ -1282,109 +1438,204 @@ function drawPoincare(analysis) {
     `SD1 ${(td.sd1 * 1000).toFixed(1)} | SD2 ${(td.sd2 * 1000).toFixed(1)} ms`;
 }
 
-function drawPSD(analysis) {
+// ── Plasma-like colormap ──────────────────────────────────────
+function heatmapColor(t) {
+  t = clamp(t, 0, 1);
+  if (t < 0.25) {
+    const f = t / 0.25;
+    return [Math.round(13+f*106), Math.round(8), Math.round(135-f*10)];
+  } else if (t < 0.50) {
+    const f = (t-0.25)/0.25;
+    return [Math.round(119+f*102), Math.round(8+f*40), Math.round(125-f*45)];
+  } else if (t < 0.75) {
+    const f = (t-0.50)/0.25;
+    return [Math.round(221+f*32), Math.round(48+f*111), Math.round(80-f*70)];
+  } else {
+    const f = (t-0.75)/0.25;
+    return [Math.round(253), Math.round(159+f*72), Math.round(10+f*21)];
+  }
+}
+
+// ── Analytic Morlet wavelet transform ─────────────────────────
+// Returns: Array[nFreqs] of Float32Array[nSamples]
+function computeWavelet(rrU, fs, freqs) {
+  const n = rrU.length;
+  const N = nextPow2(n * 2);
+  const f0 = 6; // Morlet cycles per wavelet
+  const mu = mean(Array.from(rrU));
+
+  // FFT of mean-removed signal (converted to ms)
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < n; i++) re[i] = (rrU[i] - mu) * 1000;
+  fft(re, im);
+
+  return freqs.map(freq => {
+    const s    = f0 / (2 * Math.PI * freq);   // scale (seconds)
+    const norm = Math.pow(Math.PI, -0.25) * Math.sqrt(2 * Math.PI * s / N * fs);
+    const wRe  = new Float64Array(N), wIm = new Float64Array(N);
+
+    for (let i = 1; i <= N / 2; i++) {
+      const omega = 2 * Math.PI * i * fs / N;
+      const arg   = s * omega - f0;
+      const psi   = norm * Math.exp(-0.5 * arg * arg);
+      wRe[i] = re[i] * psi;
+      wIm[i] = im[i] * psi;
+    }
+    ifft(wRe, wIm);
+
+    const pow = new Float32Array(n);
+    for (let i = 0; i < n; i++) pow[i] = wRe[i]*wRe[i] + wIm[i]*wIm[i];
+    return pow;
+  });
+}
+
+// ── Build cached ImageData for wavelet heatmap ────────────────
+function buildWaveletImage(analysis, IW, IH) {
+  const { rr, times } = analysis;
+  const N  = rr.length;
+  const tEnd = times[N-1];
+  const fs = 4.0;
+  const nS = Math.max(64, Math.floor(tEnd * fs));
+
+  // Resample to uniform grid
+  const rrU  = new Float64Array(nS);
+  const cumT = [0];
+  for (const v of rr) cumT.push(cumT[cumT.length-1] + v);
+  let j = 0;
+  for (let i = 0; i < nS; i++) {
+    const ti = i / fs;
+    while (j < N-1 && cumT[j+1] <= ti) j++;
+    const fr = clamp((ti - cumT[j]) / Math.max(1e-9, cumT[j+1]-cumT[j]), 0, 1);
+    rrU[i] = rr[clamp(j,0,N-1)] * (1-fr) + rr[clamp(j+1,0,N-1)] * fr;
+  }
+
+  // 40 log-spaced frequencies from 0.04 to 0.40 Hz
+  const nF = 40;
+  const freqs = Array.from({length: nF}, (_, i) =>
+    0.04 * Math.pow(10, i/(nF-1) * Math.log10(0.40/0.04)));
+
+  const power = computeWavelet(rrU, fs, freqs);
+
+  let maxP = 1e-20;
+  for (const row of power) for (const v of row) if (isFinite(v) && v > maxP) maxP = v;
+
+  const img = new ImageData(IW, IH);
+  const d = img.data;
+
+  for (let iy = 0; iy < IH; iy++) {
+    const frac_f = 1 - iy / (IH - 1);
+    const logF   = Math.log10(0.04) + frac_f * Math.log10(0.40/0.04);
+    const fTgt   = Math.pow(10, logF);
+    // Nearest freq bin
+    let fi = 0, minD = Infinity;
+    for (let k = 0; k < nF; k++) {
+      const dd = Math.abs(Math.log(freqs[k]) - Math.log(fTgt));
+      if (dd < minD) { minD = dd; fi = k; }
+    }
+    const row = power[fi];
+    for (let ix = 0; ix < IW; ix++) {
+      const ti  = Math.round(ix / (IW-1) * (row.length-1));
+      const val = Math.pow(clamp(row[ti] / maxP, 0, 1), 0.42); // gamma for visual balance
+      const [r,g,b] = heatmapColor(val);
+      const idx = (iy*IW + ix)*4;
+      d[idx]=r; d[idx+1]=g; d[idx+2]=b; d[idx+3]=225;
+    }
+  }
+  return img;
+}
+
+function drawWavelet(analysis) {
   const canvas = document.getElementById('psd-canvas');
   sizeCanvas(canvas);
   const ctx = canvas.getContext('2d');
-  const D = dpr();
+  const D   = dpr();
   const W = canvas.width, H = canvas.height;
-  const padL = 55 * D, padR = 20 * D, padT = 16 * D, padB = 30 * D;
-  const IW = W - padL - padR, IH = H - padT - padB;
+  const padL = 46*D, padR = 16*D, padT = 16*D, padB = 32*D;
+  const IW = Math.max(4, Math.round(W - padL - padR));
+  const IH = Math.max(4, Math.round(H - padT - padB));
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(6,15,30,0.5)';
+  ctx.fillStyle = 'rgba(6,15,30,0.6)';
   ctx.fillRect(0, 0, W, H);
 
-  const { freqs, psd } = analysis.spec;
-  if (!freqs || freqs.length < 2) return;
+  // ── Build or retrieve cached heatmap ────────────────────────
+  if (!analysis._wvCache || analysis._wvCache.w !== W || analysis._wvCache.h !== H) {
+    analysis._wvCache = { img: buildWaveletImage(analysis, IW, IH), w: W, h: H };
+  }
+  ctx.putImageData(analysis._wvCache.img, Math.round(padL), Math.round(padT));
 
-  // Only show 0–0.5 Hz
-  const maxFreq = 0.5;
-  const visIdx = freqs.reduce((last, f, i) => f <= maxFreq ? i : last, 0);
+  // ── Frequency → pixel helper (log scale, top = high freq) ───
+  const fMin = Math.log10(0.04), fMax = Math.log10(0.40);
+  const freqToY = f => padT + IH * (1 - (Math.log10(f) - fMin) / (fMax - fMin));
 
-  const fSlice = freqs.slice(0, visIdx + 1);
-  const pSlice = psd.slice(0, visIdx + 1);
-  const maxP = Math.max(...pSlice, 1);
-
-  const sx = f => padL + (f / maxFreq) * IW;
-  const sy = v => padT + IH - (v / maxP) * IH;
-
-  // Band regions
-  ctx.fillStyle = 'rgba(255,109,0,0.06)';
-  ctx.fillRect(sx(0.04), padT, sx(0.15) - sx(0.04), IH);
-  ctx.fillStyle = 'rgba(0,229,255,0.06)';
-  ctx.fillRect(sx(0.15), padT, sx(0.40) - sx(0.15), IH);
-
-  // Band labels
-  ctx.font = `${8 * D}px Orbitron, monospace`;
-  ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(255,109,0,0.5)';
-  ctx.fillText('LF', sx(0.095), padT + 14 * D);
-  ctx.fillStyle = 'rgba(0,229,255,0.5)';
-  ctx.fillText('HF', sx(0.275), padT + 14 * D);
-
-  // Band boundaries
-  ctx.strokeStyle = 'rgba(100,120,140,0.2)';
+  // ── Band boundary lines ──────────────────────────────────────
+  ctx.setLineDash([3, 4]);
   ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
-  [0.04, 0.15, 0.40].forEach(f => {
-    ctx.beginPath(); ctx.moveTo(sx(f), padT); ctx.lineTo(sx(f), H - padB); ctx.stroke();
+  [[0.04,'rgba(255,109,0,0.35)'], [0.15,'rgba(0,229,255,0.35)'], [0.40,'rgba(0,229,255,0.20)']].forEach(([f, col]) => {
+    const y = freqToY(f);
+    ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W-padR, y); ctx.stroke();
   });
   ctx.setLineDash([]);
 
-  // LF area
-  ctx.beginPath();
-  ctx.moveTo(sx(0.04), H - padB);
-  for (let i = 0; i < fSlice.length; i++) {
-    if (fSlice[i] >= 0.04 && fSlice[i] <= 0.15) {
-      ctx.lineTo(sx(fSlice[i]), sy(pSlice[i]));
-    }
+  // ── Cone of Influence shading (edge-effect region) ──────────
+  const tEnd  = analysis.times[analysis.times.length-1];
+  const toCOI = (f) => 6 / (2*Math.PI*f) * Math.sqrt(2);
+  const freqBins = [0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.40];
+  ctx.fillStyle = 'rgba(2,9,18,0.38)';
+  for (const f of freqBins) {
+    const coi  = toCOI(f);
+    const y1   = freqToY(f * 1.18), y0 = freqToY(f * 0.84);
+    const xCoi = padL + (coi / tEnd) * IW;
+    const xRev = (W - padR) - (coi / tEnd) * IW;
+    if (xCoi > padL)   ctx.fillRect(padL,  Math.min(y1,y0), xCoi - padL, Math.abs(y1-y0));
+    if (xRev < W-padR) ctx.fillRect(xRev, Math.min(y1,y0), (W-padR)-xRev, Math.abs(y1-y0));
   }
-  ctx.lineTo(sx(0.15), H - padB); ctx.closePath();
-  ctx.fillStyle = 'rgba(255,109,0,0.25)';
-  ctx.fill();
 
-  // HF area
-  ctx.beginPath();
-  ctx.moveTo(sx(0.15), H - padB);
-  for (let i = 0; i < fSlice.length; i++) {
-    if (fSlice[i] >= 0.15 && fSlice[i] <= 0.40) {
-      ctx.lineTo(sx(fSlice[i]), sy(pSlice[i]));
-    }
+  // ── Playback cursor ──────────────────────────────────────────
+  if (analysis.filter.length > 0) {
+    const fi = clamp(state.playback.frame, 0, analysis.filter.length-1);
+    const xc = padL + (analysis.filter[fi].t / tEnd) * IW;
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath(); ctx.moveTo(xc, padT); ctx.lineTo(xc, padT+IH); ctx.stroke();
   }
-  ctx.lineTo(sx(0.40), H - padB); ctx.closePath();
-  ctx.fillStyle = 'rgba(0,229,255,0.25)';
-  ctx.fill();
 
-  // Full line
-  ctx.beginPath();
-  for (let i = 0; i < fSlice.length; i++) {
-    i === 0 ? ctx.moveTo(sx(fSlice[i]), sy(pSlice[i])) : ctx.lineTo(sx(fSlice[i]), sy(pSlice[i]));
-  }
-  ctx.strokeStyle = 'rgba(179,136,255,0.8)';
-  ctx.lineWidth = 1.5 * D;
-  ctx.stroke();
-
-  // Y labels
-  ctx.font = `${8 * D}px JetBrains Mono, monospace`;
+  // ── Frequency axis labels ────────────────────────────────────
+  ctx.font      = `${8*D}px JetBrains Mono, monospace`;
   ctx.fillStyle = '#4a6080';
   ctx.textAlign = 'right';
-  ctx.fillText(maxP.toFixed(0), padL - 4, padT + 9 * D);
-  ctx.fillText('0', padL - 4, H - padB);
-
-  // X labels
-  ctx.textAlign = 'center';
-  [0, 0.1, 0.2, 0.3, 0.4, 0.5].forEach(f => {
-    ctx.fillText(f.toFixed(1), sx(f), H - 6 * D);
+  [0.04, 0.08, 0.15, 0.25, 0.40].forEach(f => {
+    const y = freqToY(f);
+    if (y >= padT && y <= padT+IH) ctx.fillText(f.toFixed(2), padL-3*D, y+3*D);
   });
 
-  ctx.fillStyle = '#2a3848';
+  // ── Band name overlays ───────────────────────────────────────
   ctx.textAlign = 'left';
-  ctx.fillText('Hz', padL, H - 6 * D);
+  ctx.font = `${8*D}px Orbitron, monospace`;
+  ctx.fillStyle = 'rgba(255,109,0,0.60)';
+  ctx.fillText('LF', padL+4*D, freqToY(0.095)-2*D);
+  ctx.fillStyle = 'rgba(0,229,255,0.60)';
+  ctx.fillText('HF', padL+4*D, freqToY(0.27)-2*D);
 
-  // Update band power labels
-  document.getElementById('lf-power').textContent  = analysis.spec.lf.toFixed(1);
-  document.getElementById('hf-power').textContent  = analysis.spec.hf.toFixed(1);
+  // ── Time axis ────────────────────────────────────────────────
+  ctx.font      = `${8*D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#4a6080';
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= 5; i++) {
+    const xT = padL + i/5 * IW;
+    ctx.fillText((i/5 * tEnd / 60).toFixed(1)+'m', xT, H-6*D);
+  }
+
+  // ── Title ────────────────────────────────────────────────────
+  ctx.textAlign = 'left';
+  ctx.font = `${7.5*D}px JetBrains Mono, monospace`;
+  ctx.fillStyle = '#2a4460';
+  ctx.fillText('Hz', padL-3*D, H-6*D);
+
+  // Keep header band power labels from spectral analysis
+  document.getElementById('lf-power').textContent   = analysis.spec.lf.toFixed(1);
+  document.getElementById('hf-power').textContent   = analysis.spec.hf.toFixed(1);
   document.getElementById('lfhf-ratio').textContent = analysis.spec.lfhf.toFixed(2);
 }
 
@@ -1429,6 +1680,10 @@ function updateStats(analysis) {
   document.getElementById('par-rho').textContent   = p.rho.toFixed(4);
   document.getElementById('par-kappa').textContent = p.kappa.toFixed(1);
   document.getElementById('par-taup').textContent  = (1 / p.ap).toFixed(3) + ' s';
+  const apsEl = document.getElementById('par-aps');
+  const aspEl = document.getElementById('par-asp');
+  if (apsEl) apsEl.textContent = (p.a_ps || 0).toFixed(3) + ' Hz';
+  if (aspEl) aspEl.textContent = (p.a_sp || 0).toFixed(3) + ' Hz';
 }
 
 function updateLiveState(p, s, delta, hr) {
@@ -1689,41 +1944,99 @@ function drawOUSim() {
 // ============================================================
 //  PLAYBACK
 // ============================================================
+// ============================================================
+//  PLAYBACK  (requestAnimationFrame, variable speed)
+// ============================================================
 function togglePlayback() {
   const pb = state.playback;
   pb.active = !pb.active;
   document.getElementById('play-btn').textContent = pb.active ? '⏸' : '▶';
-
   if (pb.active) {
-    function tick() {
-      if (!pb.active) return;
-      const an = state.currentAnalysis;
-      if (!an) return;
-      pb.frame = Math.min(pb.frame + 1, an.filter.length - 1);
-      if (pb.frame >= an.filter.length - 1) {
-        pb.active = false;
-        document.getElementById('play-btn').textContent = '▶';
-        return;
-      }
-      updatePlaybackDisplay(an);
-      pb.raf = setTimeout(tick, (an.rr[pb.frame] || 0.8) * 1000 / pb.speed);
-    }
-    pb.raf = setTimeout(tick, 50);
+    const an = state.currentAnalysis;
+    if (!an || !an.filter.length) { pb.active = false; return; }
+    pb.virtualTime = an.filter[clamp(pb.frame, 0, an.filter.length-1)].t;
+    pb.lastTs = null;
+    requestAnimationFrame(_pbTick);
   }
+}
+
+function _pbTick(ts) {
+  const pb = state.playback;
+  if (!pb.active) return;
+  const an = state.currentAnalysis;
+  if (!an) return;
+
+  if (pb.lastTs === null) pb.lastTs = ts;
+  const wall = (ts - pb.lastTs) / 1000;
+  pb.lastTs = ts;
+  pb.virtualTime += wall * pb.speed;
+
+  const tEnd = an.filter[an.filter.length-1].t;
+  if (pb.virtualTime >= tEnd) {
+    pb.virtualTime = tEnd;
+    pb.active = false;
+    document.getElementById('play-btn').textContent = '▶';
+  }
+
+  // Binary search for frame at virtualTime
+  let lo = 0, hi = an.filter.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    an.filter[mid].t <= pb.virtualTime ? (lo = mid) : (hi = mid - 1);
+  }
+  pb.frame = lo;
+
+  updatePlaybackDisplay(an);
+  drawBranchChart(an);       // fast — just line drawing
+  if (state.visMode === 'phase') drawPhaseSpace(an);
+
+  // Redraw wavelet cursor without recomputing heatmap
+  _redrawWaveletCursor(an);
+
+  if (pb.active) requestAnimationFrame(_pbTick);
+}
+
+function _redrawWaveletCursor(an) {
+  const canvas = document.getElementById('psd-canvas');
+  if (!an._wvCache) return;
+  const ctx = canvas.getContext('2d');
+  const D   = dpr();
+  const padL = 46*D, padR = 16*D, padT = 16*D, padB = 32*D;
+  const IW  = Math.round(canvas.width - padL - padR);
+  const IH  = Math.round(canvas.height - padT - padB);
+  // Restore cached image
+  ctx.putImageData(an._wvCache.img, Math.round(padL), Math.round(padT));
+  // Draw cursor
+  const tEnd = an.times[an.times.length-1];
+  const fi   = clamp(state.playback.frame, 0, an.filter.length-1);
+  const xc   = padL + (an.filter[fi].t / tEnd) * IW;
+  ctx.strokeStyle = 'rgba(255,255,255,0.50)';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath(); ctx.moveTo(xc, padT); ctx.lineTo(xc, padT+IH); ctx.stroke();
 }
 
 function seekTo(frac) {
   const an = state.currentAnalysis;
   if (!an) return;
   state.playback.frame = Math.round(frac * (an.filter.length - 1));
+  state.playback.virtualTime = an.filter[state.playback.frame].t;
   updatePlaybackDisplay(an);
+  drawBranchChart(an);
+  if (state.visMode === 'phase') drawPhaseSpace(an);
+  _redrawWaveletCursor(an);
 }
 
-// Timeline click
 document.getElementById('timeline-bar').addEventListener('click', function(e) {
   const rect = this.getBoundingClientRect();
-  const frac = (e.clientX - rect.left) / rect.width;
-  seekTo(clamp(frac, 0, 1));
+  seekTo(clamp((e.clientX - rect.left) / rect.width, 0, 1));
+});
+
+// Speed selector
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('pb-speed');
+  if (sel) sel.addEventListener('change', () => {
+    state.playback.speed = parseFloat(sel.value);
+  });
 });
 
 // ============================================================
@@ -1789,7 +2102,7 @@ function renderDashboard(analysis) {
   drawBranchChart(analysis);
   drawTachogram(analysis);
   drawPoincare(analysis);
-  drawPSD(analysis);
+  drawWavelet(analysis);
   drawOUSim();
   if (state.visMode === 'phase') drawPhaseSpace(analysis);
 }
@@ -2086,7 +2399,7 @@ window.addEventListener('resize', () => {
       drawBranchChart(state.currentAnalysis);
       drawTachogram(state.currentAnalysis);
       drawPoincare(state.currentAnalysis);
-      drawPSD(state.currentAnalysis);
+      drawWavelet(state.currentAnalysis);
       if (state.visMode === 'phase') drawPhaseSpace(state.currentAnalysis);
     }
   }, 150);

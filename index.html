@@ -154,7 +154,7 @@
         <!-- PSD -->
         <div class="chart-panel full-width">
           <div class="panel-header">
-            <div class="panel-title neutral">POWER SPECTRAL DENSITY</div>
+            <div class="panel-title neutral">WAVELET SPECTROGRAM · TIME-VARYING POWER</div>
             <div style="display:flex;gap:16px">
               <div style="font-family:var(--font-mono);font-size:10px;color:var(--symp)">LF: <span id="lf-power">—</span> ms²</div>
               <div style="font-family:var(--font-mono);font-size:10px;color:var(--para)">HF: <span id="hf-power">—</span> ms²</div>
@@ -252,6 +252,8 @@
           <div class="param-item"><div class="param-name">ρ coeff. variation</div><div class="param-val" style="color:var(--net)" id="par-rho">—</div></div>
           <div class="param-item"><div class="param-name">κ shape param.</div><div class="param-val" style="color:var(--text)" id="par-kappa">—</div></div>
           <div class="param-item"><div class="param-name">τₚ vagal τ-const</div><div class="param-val" id="par-taup">—</div></div>
+          <div class="param-item"><div class="param-name">aₚₛ symp→para</div><div class="param-val" style="color:var(--para)" id="par-aps">—</div></div>
+          <div class="param-item"><div class="param-name">aₛₚ para→symp</div><div class="param-val" style="color:var(--symp)" id="par-asp">—</div></div>
         </div>
       </div>
 
@@ -274,6 +276,13 @@
           <button class="btn-play" id="play-btn" onclick="togglePlayback()">▶</button>
           <div class="playback-time" id="playback-time">0:00 / 0:00</div>
           <button class="btn-play" onclick="seekTo(0)" title="Restart">⟪</button>
+          <select id="pb-speed" class="speed-select" title="Playback speed">
+            <option value="1">1×</option>
+            <option value="5" selected>5×</option>
+            <option value="15">15×</option>
+            <option value="30">30×</option>
+            <option value="60">60×</option>
+          </select>
         </div>
       </div>
 

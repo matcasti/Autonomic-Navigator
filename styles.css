@@ -455,7 +455,7 @@ body::before {
 
 .vis-tabs {
   position: absolute;
-  top: 16px;
+  top: 6px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -932,7 +932,7 @@ body::before {
 /* ANS Mode indicator */
 .ans-state-badge {
   position: absolute;
-  top: 16px;
+  top: 58px;
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-display);
@@ -948,6 +948,10 @@ body::before {
 .ans-state-badge.vagal { color: var(--para); border-color: rgba(0,229,255,0.4); background: rgba(0,229,255,0.08); }
 .ans-state-badge.balanced { color: var(--net); border-color: rgba(0,230,118,0.4); background: rgba(0,230,118,0.08); }
 .ans-state-badge.sympathetic { color: var(--symp); border-color: rgba(255,109,0,0.4); background: rgba(255,109,0,0.08); }
+
+/* Hide beat-flash and state badge when in phase-space mode */
+.vis-mode-phase .beat-flash     { opacity: 0 !important; pointer-events: none; }
+.vis-mode-phase .ans-state-badge { display: none; }
 
 /* Responsive */
 @media (max-width: 900px) {

@@ -110,6 +110,7 @@
           </div>
           <div class="vis-label para" id="vis-para-label">VAGAL p̂ = 0.00</div>
           <div class="vis-label symp" id="vis-symp-label">ADREN ŝ = 0.00</div>
+          <div class="ans-state-badge balanced" id="ans-state-badge">BALANCED</div>
           <div class="vis-info">
             <div class="vi-item"><div class="vi-dot para"></div><span style="font-size:10px;color:var(--text-dim)">PARASYMPATHETIC</span></div>
             <div class="vi-item"><div class="vi-dot symp"></div><span style="font-size:10px;color:var(--text-dim)">SYMPATHETIC</span></div>
@@ -134,21 +135,12 @@
         </div>
 
         <!-- Tachogram -->
-        <div class="chart-panel">
+        <div class="chart-panel full-width">
           <div class="panel-header">
             <div class="panel-title neutral">RR TACHOGRAM</div>
             <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)" id="tachogram-info">— beats</div>
           </div>
-          <canvas class="chart-canvas" id="tachogram-canvas" height="140"></canvas>
-        </div>
-
-        <!-- Poincaré -->
-        <div class="chart-panel">
-          <div class="panel-header">
-            <div class="panel-title neutral">POINCARÉ PLOT</div>
-            <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)" id="poincare-info">SD1 — | SD2 —</div>
-          </div>
-          <canvas class="chart-canvas" id="poincare-canvas" height="140"></canvas>
+          <canvas class="chart-canvas" id="tachogram-canvas" height="160"></canvas>
         </div>
 
         <!-- PSD -->

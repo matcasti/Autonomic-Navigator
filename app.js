@@ -527,6 +527,11 @@ function initThreeScene() {
   centerLight.position.set(0, 0, 0);
   scene.add(centerLight);
 
+  // Expose lights so animateScene can modulate them from EKF output
+  scene.userData.paraLight   = paraLight;
+  scene.userData.sympLight   = sympLight;
+  scene.userData.centerLight = centerLight;
+
   // Star field
   const starGeo = new THREE.BufferGeometry();
   const starPos = new Float32Array(1500 * 3);
@@ -712,36 +717,85 @@ function initThreeScene() {
 
     // Animate heart pulse
     const rrInterval = an ? (an.td.meanRR || 0.9) : 0.9;
-    const beatPhase = (animTime % rrInterval) / rrInterval;
+    const beatPhase  = (animTime % rrInterval) / rrInterval;
     const heartScale = 1 + 0.22 * Math.exp(-8 * beatPhase) * Math.sin(10 * beatPhase);
     heartMesh.scale.setScalar(heartScale);
     heartMesh.material.emissiveIntensity = 2.5 + 1.5 * heartScale;
 
-    // Flash beat
-    if (beatPhase < 0.05) {
+    // Flash beat — ANS globe mode only
+    if (beatPhase < 0.05 && state.visMode === 'ans') {
       const flash = document.getElementById('beat-flash');
-      if (flash) { flash.style.opacity = '1'; setTimeout(() => { if(flash) flash.style.opacity = '0'; }, 60); }
+      if (flash) { flash.style.opacity = '1'; setTimeout(() => { if (flash) flash.style.opacity = '0'; }, 60); }
     }
 
-    // Animate parasympathetic node
-    const paraSize = 0.55 + clamp(Math.abs(curP) * 0.4, 0, 0.5);
-    const paraAngle = animTime * (0.3 + Math.abs(curP) * 0.1);
-    paraNode.position.set(-5 * Math.cos(paraAngle * 0.3), 1.5 + Math.sin(animTime * 0.8) * 0.3, -5 * Math.sin(paraAngle * 0.3));
-    paraNode.scale.setScalar(paraSize);
-    paraNode.material.emissiveIntensity = 1.5 + 2 * Math.max(0, curP);
+    // ── σ-normalised EKF values ──────────────────────────────────
+    // Raw p/s values are zero-mean by construction; normalise by the
+    // stationary σ so the visual magnitudes are meaningful.
+    const pr_g  = an ? an.params : null;
+    const sigPg = pr_g ? pr_g.sigma_p / Math.sqrt(2 * pr_g.ap) : 0.05;
+    const sigSg = pr_g ? pr_g.sigma_s / Math.sqrt(2 * pr_g.as) : 0.05;
+    const pSig  = clamp(curP / (sigPg * 2.5), -1, 1);   // ±1 ≈ ±2.5σ
+    const sSig  = clamp(curS / (sigSg * 2.5), -1, 1);
 
-    // Update para glow positions
+    // Heart colour tracks net balance: cyan (vagal) → red (neutral) → orange (sympathetic)
+    // curDelta = s − p, so positive = sympathetic dominant
+    const balT = clamp(curDelta * 2.5 + 0.5, 0, 1);
+    heartMesh.material.emissive.setRGB(
+      0.50 + balT  * 0.50,
+      0.04 + (1 - Math.abs(balT * 2 - 1)) * 0.10,
+      0.20 * (1 - balT)
+    );
+
+    // Dynamic point lights track actual branch estimates
+    const pL = scene.userData.paraLight;
+    const sL = scene.userData.sympLight;
+    if (pL) pL.intensity = 1.0 + clamp((pSig + 1) * 2.5, 0, 6);
+    if (sL) sL.intensity = 1.0 + clamp((sSig + 1) * 2.5, 0, 6);
+
+    // ANS state badge (only when globe is visible)
+    const badge = document.getElementById('ans-state-badge');
+    if (badge && state.visMode === 'ans') {
+      const diff = pSig - sSig;
+      if (diff > 0.25) {
+        badge.textContent = 'VAGAL DOMINANT';
+        badge.className   = 'ans-state-badge vagal';
+      } else if (diff < -0.25) {
+        badge.textContent = 'SYMPATHETIC DOMINANT';
+        badge.className   = 'ans-state-badge sympathetic';
+      } else {
+        badge.textContent = 'BALANCED';
+        badge.className   = 'ans-state-badge balanced';
+      }
+    }
+
+    // ── Parasympathetic node — size/brightness from σ-normalised p ──
+    const paraAct   = Math.max(0, pSig);    // 0 → 1
+    const paraSize  = 0.45 + paraAct * 0.55;
+    const paraAngle = animTime * (0.3 + paraAct * 0.12);
+    paraNode.position.set(
+      -5 * Math.cos(paraAngle * 0.3),
+       1.5 + Math.sin(animTime * 0.8) * 0.3,
+      -5 * Math.sin(paraAngle * 0.3)
+    );
+    paraNode.scale.setScalar(paraSize);
+    paraNode.material.emissiveIntensity = 0.8 + paraAct * 3.5;
+
     for (let i = 1; i <= 3; i++) {
       const g = paraNode.userData['glow' + i];
       if (g) g.position.copy(paraNode.position);
     }
 
-    // Animate sympathetic node
-    const sympSize = 0.55 + clamp(Math.abs(curS) * 0.4, 0, 0.5);
-    const sympAngle = -animTime * (0.2 + Math.abs(curS) * 0.08);
-    sympNode.position.set(5 * Math.cos(sympAngle * 0.25), 1.5 + Math.sin(animTime * 0.5 + 1) * 0.3, 5 * Math.sin(sympAngle * 0.25));
+    // ── Sympathetic node — size/brightness from σ-normalised s ──
+    const sympAct   = Math.max(0, sSig);
+    const sympSize  = 0.45 + sympAct * 0.55;
+    const sympAngle = -animTime * (0.2 + sympAct * 0.09);
+    sympNode.position.set(
+       5 * Math.cos(sympAngle * 0.25),
+       1.5 + Math.sin(animTime * 0.5 + 1) * 0.3,
+       5 * Math.sin(sympAngle * 0.25)
+    );
     sympNode.scale.setScalar(sympSize);
-    sympNode.material.emissiveIntensity = 1.5 + 2 * Math.max(0, curS);
+    sympNode.material.emissiveIntensity = 0.8 + sympAct * 3.5;
 
     for (let i = 1; i <= 3; i++) {
       const g = sympNode.userData['glow' + i];
@@ -1066,58 +1120,108 @@ function drawPhaseSpace(analysis) {
     (pad.l + W - pad.r) / 2, 46*D
   );
 
-  // ── Trajectory – time-encoded colour (cool → warm) ───────────
-  const N = filt.length;
-  for (let i = 1; i < N; i++) {
-    const t = i / N;
-    const r = Math.round(20  + t * 220);
-    const g = Math.round(110 + t * 30);
-    const b = Math.round(235 - t * 205);
-    ctx.strokeStyle = `rgba(${r},${g},${b},${0.15 + 0.50 * t})`;
-    ctx.lineWidth   = 1.2 * D;
+  // ── Trajectory – Kirsanov-style glowing tail ─────────────────
+  const N         = filt.length;
+  const TAIL      = Math.min(N, 90);          // recent window rendered as bright trail
+  const tailStart = Math.max(0, N - TAIL);
+
+  // Full-history ghost — very faint, drawn only when there's history beyond the tail
+  if (tailStart > 2) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(30,80,140,1)';
+    ctx.globalAlpha = 0.06;
+    ctx.lineWidth   = 0.8 * D;
+    ctx.beginPath();
+    ctx.moveTo(toX(normP[0]), toY(normS[0]));
+    for (let i = 1; i <= tailStart; i++) ctx.lineTo(toX(normP[i]), toY(normS[i]));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Outer glow pass — wide, faint cyan-green haze
+  ctx.save();
+  ctx.lineWidth   = 10 * D;
+  ctx.lineJoin    = 'round';
+  ctx.lineCap     = 'round';
+  ctx.strokeStyle = 'rgba(0,215,140,0.055)';
+  ctx.beginPath();
+  ctx.moveTo(toX(normP[tailStart]), toY(normS[tailStart]));
+  for (let i = tailStart + 1; i < N; i++) ctx.lineTo(toX(normP[i]), toY(normS[i]));
+  ctx.stroke();
+
+  // Mid glow pass
+  ctx.lineWidth   = 5 * D;
+  ctx.strokeStyle = 'rgba(0,235,155,0.10)';
+  ctx.beginPath();
+  ctx.moveTo(toX(normP[tailStart]), toY(normS[tailStart]));
+  for (let i = tailStart + 1; i < N; i++) ctx.lineTo(toX(normP[i]), toY(normS[i]));
+  ctx.stroke();
+  ctx.restore();
+
+  // Core line — per-segment colour fading dim-blue → bright cyan-green
+  for (let i = tailStart + 1; i < N; i++) {
+    const tNorm = (i - tailStart) / TAIL;          // 0 = oldest in tail, 1 = newest
+    const alpha = 0.15 + 0.78 * tNorm;
+    ctx.strokeStyle = `rgba(${Math.round(10 + tNorm * 30)},${Math.round(110 + tNorm * 120)},${Math.round(225 - tNorm * 130)},${alpha})`;
+    ctx.lineWidth   = (0.8 + tNorm * 1.3) * D;
     ctx.beginPath();
     ctx.moveTo(toX(normP[i - 1]), toY(normS[i - 1]));
     ctx.lineTo(toX(normP[i]),     toY(normS[i]));
     ctx.stroke();
   }
 
-  // ── Directional chevrons along the trajectory ────────────────
-  const chevEvery = Math.max(1, Math.floor(N / 20));
-  for (let i = chevEvery; i < N; i += chevEvery) {
+  // ── Directional chevrons — tail only, sparser ────────────────
+  const chevEvery = Math.max(1, Math.floor(TAIL / 7));
+  for (let i = tailStart + chevEvery; i < N; i += chevEvery) {
     const dx = normP[i] - normP[i - 1], dy = normS[i] - normS[i - 1];
     const dm = Math.hypot(dx, dy);
     if (dm < 1e-5) continue;
-    const ux = dx / dm, uy = -dy / dm;   // canvas y-flip
+    const ux = dx / dm, uy = -dy / dm;
     const cx2 = toX(normP[i]), cy2 = toY(normS[i]);
-    const cs  = 4.5 * D;
-    const t   = i / N;
-    const r   = Math.round(20  + t * 220);
-    const g2  = Math.round(110 + t * 30);
-    const b   = Math.round(235 - t * 205);
-    ctx.fillStyle = `rgba(${r},${g2},${b},${0.55 + t * 0.35})`;
+    const cs   = 5 * D;
+    const tNorm = (i - tailStart) / TAIL;
+    ctx.fillStyle = `rgba(${Math.round(10 + tNorm * 30)},${Math.round(110 + tNorm * 120)},${Math.round(225 - tNorm * 130)},${0.50 + tNorm * 0.45})`;
     ctx.beginPath();
-    ctx.moveTo(cx2 + ux * cs,          cy2 + uy * cs);
-    ctx.lineTo(cx2 - ux * cs - uy * cs * 0.55, cy2 - uy * cs + ux * cs * 0.55);
-    ctx.lineTo(cx2 - ux * cs + uy * cs * 0.55, cy2 - uy * cs - ux * cs * 0.55);
+    ctx.moveTo(cx2 + ux * cs,                      cy2 + uy * cs);
+    ctx.lineTo(cx2 - ux * cs - uy * cs * 0.55,     cy2 - uy * cs + ux * cs * 0.55);
+    ctx.lineTo(cx2 - ux * cs + uy * cs * 0.55,     cy2 - uy * cs - ux * cs * 0.55);
     ctx.closePath(); ctx.fill();
   }
 
-  // ── Current frame marker ─────────────────────────────────────
+  // ── Current frame marker — multi-ring glow ───────────────────
   const fi  = clamp(state.playback.frame, 0, N - 1);
   const cpx = toX(normP[fi]), cpy = toY(normS[fi]);
-  const grd = ctx.createRadialGradient(cpx, cpy, 0, cpx, cpy, 15 * D);
-  grd.addColorStop(0, 'rgba(0,230,118,0.55)');
-  grd.addColorStop(1, 'rgba(0,230,118,0)');
-  ctx.beginPath(); ctx.arc(cpx, cpy, 15 * D, 0, Math.PI * 2);
-  ctx.fillStyle = grd; ctx.fill();
 
-  ctx.beginPath(); ctx.arc(cpx, cpy, 4.5 * D, 0, Math.PI * 2);
-  ctx.fillStyle   = '#00e676'; ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+  // Outer halo
+  const halo1 = ctx.createRadialGradient(cpx, cpy, 0, cpx, cpy, 30 * D);
+  halo1.addColorStop(0, 'rgba(0,255,160,0.20)');
+  halo1.addColorStop(1, 'rgba(0,255,160,0)');
+  ctx.beginPath(); ctx.arc(cpx, cpy, 30 * D, 0, Math.PI * 2);
+  ctx.fillStyle = halo1; ctx.fill();
 
-  // Equilibrium
-  ctx.beginPath(); ctx.arc(ox, oy, 3 * D, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+  // Inner halo
+  const halo2 = ctx.createRadialGradient(cpx, cpy, 0, cpx, cpy, 13 * D);
+  halo2.addColorStop(0, 'rgba(120,255,210,0.50)');
+  halo2.addColorStop(1, 'rgba(0,230,130,0)');
+  ctx.beginPath(); ctx.arc(cpx, cpy, 13 * D, 0, Math.PI * 2);
+  ctx.fillStyle = halo2; ctx.fill();
+
+  // Bright core
+  ctx.beginPath(); ctx.arc(cpx, cpy, 5 * D, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(cpx, cpy, 3 * D, 0, Math.PI * 2);
+  ctx.fillStyle = '#00ffaa'; ctx.fill();
+
+  // ── Equilibrium — glowing ring ───────────────────────────────
+  const eqGrd = ctx.createRadialGradient(ox, oy, 0, ox, oy, 16 * D);
+  eqGrd.addColorStop(0, 'rgba(255,255,255,0.30)');
+  eqGrd.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.beginPath(); ctx.arc(ox, oy, 16 * D, 0, Math.PI * 2);
+  ctx.fillStyle = eqGrd; ctx.fill();
+  ctx.beginPath(); ctx.arc(ox, oy, 6 * D, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5 * D; ctx.stroke();
+  ctx.beginPath(); ctx.arc(ox, oy, 2.5 * D, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fill();
 
   // ── Instantaneous velocity arrow at current state ─────────────
   const cvx   = -pr.ap * normP[fi] + gammaPS * normS[fi];
@@ -1398,7 +1502,7 @@ function drawTachogram(analysis) {
   const ctx = canvas.getContext('2d');
   const D = dpr();
   const W = canvas.width, H = canvas.height;
-  const padL = 50 * D, padR = 16 * D, padT = 16 * D, padB = 30 * D;
+  const padL = 50 * D, padR = 20 * D, padT = 16 * D, padB = 36 * D;
   const IW = W - padL - padR, IH = H - padT - padB;
 
   ctx.clearRect(0, 0, W, H);
@@ -2343,7 +2447,6 @@ function renderDashboard(analysis) {
   updateStats(analysis);
   drawBranchChart(analysis);
   drawTachogram(analysis);
-  drawPoincare(analysis);
   drawWavelet(analysis);
   drawOUSim();
   if (state.visMode === 'phase') drawPhaseSpace(analysis);
